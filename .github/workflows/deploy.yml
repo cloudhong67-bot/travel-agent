@@ -1,0 +1,149 @@
+# main 푸시 → CI → 이미지 빌드·ACR 푸시(태그: 커밋 SHA) → 비밀값 갱신 → ACA 새 리비전 → 스모크(/api/healthz)
+# 실패하면 직전 리비전을 복사해 트래픽을 되돌린다. Azure 인증은 OIDC(비밀키 없음).
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    permissions:
+      id-token: write # OIDC 토큰 발급
+      contents: read
+    env:
+      RG: ${{ vars.AZURE_RESOURCE_GROUP }}
+      APP: ${{ vars.ACA_NAME }}
+      ACR: ${{ vars.ACR_NAME }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure 로그인 (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: 설정 확인
+        run: |
+          for v in RG APP ACR; do
+            if [ -z "${!v}" ]; then echo "::error::GitHub Environment 변수 ${v}가 비어 있습니다 (docs/RUNBOOK.md 참고)"; exit 1; fi
+          done
+          LOGIN_SERVER=$(az acr show -n "$ACR" --query loginServer -o tsv)
+          echo "IMAGE=${LOGIN_SERVER}/trippilot:${GITHUB_SHA}" >> "$GITHUB_ENV"
+          # 롤백 기준: 지금 트래픽을 받는 리비전
+          echo "PREV_REVISION=$(az containerapp show -n "$APP" -g "$RG" --query properties.latestReadyRevisionName -o tsv)" >> "$GITHUB_ENV"
+
+      - name: ACR 로그인
+        run: az acr login --name "$ACR"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 이미지 빌드·푸시
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE }}
+          # 브라우저 공개 키는 빌드 시점에 번들에 들어간다 (서버 비밀값은 넣지 않음)
+          build-args: |
+            NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY=${{ vars.NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY }}
+            NEXT_PUBLIC_NAVER_MAPS_CLIENT_ID=${{ vars.NEXT_PUBLIC_NAVER_MAPS_CLIENT_ID }}
+            NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID=${{ vars.NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Container App 비밀값 갱신
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GOOGLE_MAPS_SERVER_KEY: ${{ secrets.GOOGLE_MAPS_SERVER_KEY }}
+          NAVER_MAPS_CLIENT_ID: ${{ secrets.NAVER_MAPS_CLIENT_ID }}
+          NAVER_MAPS_CLIENT_SECRET: ${{ secrets.NAVER_MAPS_CLIENT_SECRET }}
+          NAVER_SEARCH_CLIENT_ID: ${{ secrets.NAVER_SEARCH_CLIENT_ID }}
+          NAVER_SEARCH_CLIENT_SECRET: ${{ secrets.NAVER_SEARCH_CLIENT_SECRET }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          APP_ACCESS_TOKEN: ${{ secrets.APP_ACCESS_TOKEN }}
+        run: |
+          az containerapp secret set -n "$APP" -g "$RG" --output none --secrets \
+            "gemini-api-key=${GEMINI_API_KEY}" \
+            "google-maps-server-key=${GOOGLE_MAPS_SERVER_KEY}" \
+            "naver-maps-client-id=${NAVER_MAPS_CLIENT_ID}" \
+            "naver-maps-client-secret=${NAVER_MAPS_CLIENT_SECRET}" \
+            "naver-search-client-id=${NAVER_SEARCH_CLIENT_ID}" \
+            "naver-search-client-secret=${NAVER_SEARCH_CLIENT_SECRET}" \
+            "database-url=${DATABASE_URL}" \
+            "app-access-token=${APP_ACCESS_TOKEN}"
+
+      - name: 새 리비전 배포
+        run: |
+          # 최초 Bicep 배포는 퀵스타트 이미지(포트 80)로 만들어지므로 앱 포트로 맞춘다 (이미 3000이면 변화 없음)
+          az containerapp ingress update -n "$APP" -g "$RG" --target-port 3000 --output none
+          az containerapp update -n "$APP" -g "$RG" --output none \
+            --image "$IMAGE" \
+            --revision-suffix "${GITHUB_SHA::7}-${GITHUB_RUN_ATTEMPT}" \
+            --set-env-vars \
+              GEMINI_API_KEY=secretref:gemini-api-key \
+              GOOGLE_MAPS_SERVER_KEY=secretref:google-maps-server-key \
+              NAVER_MAPS_CLIENT_ID=secretref:naver-maps-client-id \
+              NAVER_MAPS_CLIENT_SECRET=secretref:naver-maps-client-secret \
+              NAVER_SEARCH_CLIENT_ID=secretref:naver-search-client-id \
+              NAVER_SEARCH_CLIENT_SECRET=secretref:naver-search-client-secret \
+              DATABASE_URL=secretref:database-url \
+              APP_ACCESS_TOKEN=secretref:app-access-token \
+              "GEMINI_MODEL=${{ vars.GEMINI_MODEL || 'gemini-3.8-flash' }}" \
+              "DAILY_TRIP_LIMIT=${{ vars.DAILY_TRIP_LIMIT || '10' }}" \
+              "NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY=${{ vars.NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY }}" \
+              "NEXT_PUBLIC_NAVER_MAPS_CLIENT_ID=${{ vars.NEXT_PUBLIC_NAVER_MAPS_CLIENT_ID }}" \
+              "NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID=${{ vars.NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID }}"
+
+      - name: 스모크용 러너 IP 임시 허용
+        run: |
+          RUNNER_IP=$(curl -fsS https://api.ipify.org)
+          az containerapp ingress access-restriction set -n "$APP" -g "$RG" --output none \
+            --rule-name gh-smoke --ip-address "${RUNNER_IP}/32" --action Allow --description "GitHub Actions smoke (temporary)"
+
+      - name: 스모크 테스트 (/api/healthz, 콜드스타트 고려 최대 120초)
+        id: smoke
+        run: |
+          FQDN=$(az containerapp show -n "$APP" -g "$RG" --query properties.configuration.ingress.fqdn -o tsv)
+          EXPECTED="${APP}--${GITHUB_SHA::7}-${GITHUB_RUN_ATTEMPT}"
+          for i in $(seq 1 24); do
+            CODE=$(curl -s -o /tmp/healthz.json -w '%{http_code}' --max-time 10 "https://${FQDN}/api/healthz" || true)
+            READY=$(az containerapp show -n "$APP" -g "$RG" --query properties.latestReadyRevisionName -o tsv)
+            echo "try ${i}: http=${CODE} ready=${READY}"
+            if [ "$CODE" = "200" ] && [ "$READY" = "$EXPECTED" ]; then
+              cat /tmp/healthz.json; echo
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::새 리비전(${EXPECTED})이 120초 안에 정상 응답하지 않았습니다"
+          exit 1
+
+      - name: 실패 시 직전 리비전으로 복귀
+        if: failure() && env.PREV_REVISION != ''
+        run: |
+          echo "::warning::배포 실패 — ${PREV_REVISION}을(를) 복사해 트래픽을 되돌립니다"
+          # 단일 리비전 모드: 직전 리비전의 템플릿(이미지·환경변수)으로 새 리비전을 만든다
+          az containerapp revision copy -n "$APP" -g "$RG" --from-revision "$PREV_REVISION" --revision-suffix "rollback-${GITHUB_RUN_ID}" --output none
+          az containerapp show -n "$APP" -g "$RG" --query "{latestReady:properties.latestReadyRevisionName, image:properties.template.containers[0].image}" -o table
+
+      - name: 러너 IP 허용 제거
+        if: always()
+        run: az containerapp ingress access-restriction remove -n "$APP" -g "$RG" --rule-name gh-smoke --output none || true

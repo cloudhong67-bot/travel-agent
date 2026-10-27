@@ -1,0 +1,62 @@
+# PR 검증: lint · typecheck · 단위/통합 테스트 · Docker 빌드(푸시 없음)
+# deploy.yml이 workflow_call로 재사용한다.
+name: CI
+
+on:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: lint · typecheck · test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 의존성 설치 (postinstall에서 prisma generate)
+        run: npm ci
+
+      - run: npm run lint
+
+      - run: npm run typecheck
+
+      - name: 단위 테스트 (외부 API는 MSW)
+        run: npm run test:unit
+
+      - name: 통합 테스트 (Testcontainers SQL Server 2022)
+        run: npm run test:int
+        env:
+          # 러너에 Docker가 있으므로 통합 테스트를 건너뛰지 않고 실패로 처리
+          REQUIRE_DOCKER: "1"
+
+  docker:
+    name: docker build (no push)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 이미지 빌드
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: trippilot:ci-${{ github.sha }}
+          # PR 빌드는 브라우저 키 없이도 빌드되는지만 확인한다 (지도는 런타임에 "키 미설정" 안내)
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -1,0 +1,96 @@
+# infra/ 변경 → what-if 결과 출력 → 수동 승인(production-infra 환경의 Required reviewers) → 구독 범위 배포
+# 최초 1회 배포는 docs/RUNBOOK.md의 로컬 명령으로 한다 (이 워크플로는 이미 있는 Container App의 비밀값·이미지를 이어받는다).
+name: Infra
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "infra/**"
+      - ".github/workflows/infra.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: infra-production
+  cancel-in-progress: false
+
+env:
+  AZURE_LOCATION: ${{ vars.AZURE_LOCATION || 'koreacentral' }}
+  AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+  ACA_NAME: ${{ vars.ACA_NAME }}
+  ALLOWED_IP_RANGES: ${{ vars.ALLOWED_IP_RANGES }}
+  BUDGET_CONTACT_EMAILS: ${{ vars.BUDGET_CONTACT_EMAILS }}
+  BUDGET_START_DATE: ${{ vars.BUDGET_START_DATE }}
+  NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY: ${{ vars.NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY }}
+  NEXT_PUBLIC_NAVER_MAPS_CLIENT_ID: ${{ vars.NEXT_PUBLIC_NAVER_MAPS_CLIENT_ID }}
+  NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID: ${{ vars.NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID }}
+
+jobs:
+  what-if:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: 현재 이미지·비밀값 이어받기
+        run: bash infra/scripts/export-current-app-state.sh
+
+      - name: what-if
+        env:
+          SQL_ADMIN_PASSWORD: ${{ secrets.SQL_ADMIN_PASSWORD }}
+        run: |
+          az deployment sub what-if \
+            --name "trippilot-${GITHUB_RUN_ID}" \
+            --location "$AZURE_LOCATION" \
+            --template-file infra/main.bicep \
+            --parameters infra/main.bicepparam \
+            --result-format FullResourcePayloads | tee what-if.txt
+          {
+            echo "## Bicep what-if"
+            echo '```'
+            cat what-if.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: what-if
+    runs-on: ubuntu-latest
+    # 이 환경에 Required reviewers를 설정해 what-if를 확인한 뒤 수동 승인한다
+    environment: production-infra
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: 현재 이미지·비밀값 이어받기
+        run: bash infra/scripts/export-current-app-state.sh
+
+      - name: 배포
+        env:
+          SQL_ADMIN_PASSWORD: ${{ secrets.SQL_ADMIN_PASSWORD }}
+        run: |
+          az deployment sub create \
+            --name "trippilot-${GITHUB_RUN_ID}" \
+            --location "$AZURE_LOCATION" \
+            --template-file infra/main.bicep \
+            --parameters infra/main.bicepparam \
+            --query "properties.outputs" -o json

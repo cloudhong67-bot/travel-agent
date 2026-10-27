@@ -1,0 +1,28 @@
+# 로컬 개발용 SQL Server 2022 (Azure SQL Database와 같은 엔진 계열)
+# 실행: npm run db:up  →  npm run db:migrate
+services:
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: trippilot-mssql
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: Developer
+      # .env.local 의 MSSQL_SA_PASSWORD 를 사용 (복잡도 규칙: 8자 이상, 대·소문자·숫자·기호 중 3종)
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?.env.local 에 MSSQL_SA_PASSWORD 를 설정하세요}
+    ports:
+      - "1433:1433"
+    volumes:
+      - mssql-data:/var/opt/mssql
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -Q 'SELECT 1' -b -o /dev/null",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+volumes:
+  mssql-data:

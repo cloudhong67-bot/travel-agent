@@ -1,0 +1,117 @@
+// PRD 8장 데이터 모델 (Azure SQL / SQL Server)
+// Prisma 7: 연결 URL은 prisma.config.ts, 런타임 연결은 @prisma/adapter-mssql 드라이버 어댑터가 담당한다.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlserver"
+}
+
+/// 도시 기초정보 (여러 여행이 공유하는 캐시)
+model City {
+  id           String   @id @default(uuid())
+  name         String
+  countryCode  String
+  lat          Float
+  lon          Float
+  background   String?  @db.NVarChar(Max) // 역사·배경 요약(JSON)
+  tourismBoard String?  @db.NVarChar(Max) // 관광청 URL·추출정보(JSON)
+  refreshedAt  DateTime
+  pois         Poi[]
+  trips        Trip[]
+
+  @@unique([name, countryCode])
+}
+
+model Poi {
+  id        String  @id @default(uuid())
+  cityId    String
+  name      String
+  category  String
+  lat       Float
+  lon       Float
+  hours     String? @db.NVarChar(Max)
+  sourceUrl String?
+  city      City    @relation(fields: [cityId], references: [id])
+
+  @@index([cityId])
+}
+
+model Trip {
+  id           String       @id @default(uuid())
+  ownerId      String
+  /// PRD 원안은 필수. 생성 요청 시점에는 도시가 지오코딩되지 않았으므로 에이전트가 확정한 뒤 채운다.
+  cityId       String?
+  /// 사용자가 입력한 도시명 원문 (cityId 확정 전 표시·지오코딩 입력용)
+  cityName     String
+  /// 동명 도시 구분용으로 사용자가 고른 국가 (ISO 3166-1 alpha-2, 선택)
+  countryCode  String?
+  days         Int
+  startDate    DateTime?
+  style        String
+  transport    String
+  /// 예산 수준 (low, medium, high). 선택 입력
+  budget       String?
+  status       String // queued, running, done, failed
+  progress     Int          @default(0) // 0~100
+  /// 에이전트 현재 단계 (normalize, cache, collect, assign, optimize, validate, save)
+  step         String?
+  /// 단계 진행 메시지 (SSE로 전달)
+  stepMessage  String?
+  errorMessage String?      @db.NVarChar(Max)
+  /// 결과 메타(JSON): 숙소 거점, 이동시간 기준 안내, 경고, 검증 필요 일자, 사용량
+  meta         String?      @db.NVarChar(Max)
+  createdAt    DateTime     @default(now())
+  /// 멈춘 작업(10분 이상 갱신 없음) 정리용
+  updatedAt    DateTime     @default(now()) @updatedAt
+  city         City?        @relation(fields: [cityId], references: [id])
+  tripDays     TripDay[]
+  nearby       NearbyTown[]
+
+  @@index([createdAt])
+  @@index([cityId])
+  @@index([status, updatedAt])
+}
+
+model TripDay {
+  id       String  @id @default(uuid())
+  tripId   String
+  dayIndex Int
+  title    String
+  stops    String  @db.NVarChar(Max) // 순서·시간·체류·이동(JSON)
+  routeGeo String? @db.NVarChar(Max) // 경로선 GeoJSON
+  trip     Trip    @relation(fields: [tripId], references: [id], onDelete: Cascade)
+
+  @@unique([tripId, dayIndex])
+}
+
+model NearbyTown {
+  id         String @id @default(uuid())
+  tripId     String
+  name       String
+  travelMins Int
+  reason     String
+  trip       Trip   @relation(fields: [tripId], references: [id], onDelete: Cascade)
+
+  @@index([tripId])
+}
+
+/// 외부 API 사용량·일정 생성 기록. 여행을 삭제해도 한도·비용 집계가 유지되도록 Trip과 FK를 두지 않는다.
+model UsageLog {
+  id           String   @id @default(uuid())
+  /// 집계 기준일 (Asia/Seoul 달력 날짜)
+  date         DateTime @db.Date
+  tripId       String?
+  /// gemini | gemini-search | google-maps | naver | trip (일정 생성 1건, 하루 한도 계산용)
+  provider     String
+  calls        Int      @default(1)
+  inputTokens  Int      @default(0)
+  outputTokens Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  @@index([date, provider])
+  @@index([tripId])
+}
