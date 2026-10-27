@@ -158,15 +158,16 @@ export function createTripRepo(db: () => Db) {
     },
 
     /**
-     * 일자 재생성 시작을 원자적으로 표시한다 (done/failed → running).
-     * 이미 작업 중이면 busy, 범위를 벗어난 일자면 badDay.
+     * 일자 재생성 시작을 원자적으로 표시한다 (done → running).
+     * 이미 작업 중이면 busy, 생성에 실패한 여행(일정 없음)이면 failed, 범위를 벗어난 일자면 badDay.
      */
-    async claimForRegeneration(id: string, dayIndex: number): Promise<"ok" | "notFound" | "busy" | "badDay"> {
+    async claimForRegeneration(id: string, dayIndex: number): Promise<"ok" | "notFound" | "busy" | "failed" | "badDay"> {
       const t = await db().trip.findUnique({ where: { id }, select: { days: true, status: true } });
       if (!t) return "notFound";
       if (dayIndex >= t.days) return "badDay";
+      if (t.status === "failed") return "failed";
       const { count } = await db().trip.updateMany({
-        where: { id, status: { in: ["done", "failed"] } },
+        where: { id, status: "done" },
         data: { status: "running", step: "assign", stepMessage: `day ${dayIndex + 1} 재생성 대기`, progress: 0, errorMessage: null },
       });
       return count ? "ok" : "busy";

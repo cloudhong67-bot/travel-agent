@@ -10,8 +10,10 @@ import { NaverMapsProvider } from "@/server/adapters/maps/naver";
 import { GeminiGoogleSearch } from "@/server/adapters/search/geminiGoogleSearch";
 import { agentHandlers, type ScenarioOptions } from "@/test/msw/agentScenario";
 import { server } from "@/test/msw/server";
+import type { LlmProvider } from "@/server/adapters/llm/types";
 import { MemoryAgentStore } from "./memoryStore";
 import { KR_TRAVEL_NOTICE, runDayRegeneration, runTripJob } from "./orchestrator";
+import { ASSIGNMENT_TOOL_NAME } from "./prompts/assignment";
 import type { AgentDeps, AgentLimits } from "./types";
 
 function setup(opts: ScenarioOptions = {}, limits?: Partial<AgentLimits>) {
@@ -187,5 +189,50 @@ describe("runDayRegeneration", () => {
     expect(after[2]).toEqual(before[2]);
     const others = new Set([...after[0].stops, ...after[2].stops].map((s) => s.name));
     expect(after[1].stops.some((s) => others.has(s.name))).toBe(false);
+  });
+
+  it("다른 일자의 당일치기 도시는 다시 배정하지 않는다", async () => {
+    const { store, deps } = setup();
+    // 배분 결과에서 target 일자에 근교 도시(브라가)를 넣는 LLM 래퍼
+    let target = 0;
+    const llm: LlmProvider = {
+      async generate(req) {
+        const res = await deps.llm.generate(req);
+        const call = res.functionCalls.find((c) => c.name === ASSIGNMENT_TOOL_NAME);
+        for (const d of (call?.args.days as { dayIndex: number; dayTripTown: string | null }[] | undefined) ?? []) {
+          if (d.dayIndex === target) d.dayTripTown = "브라가";
+        }
+        return res;
+      },
+    };
+    const id = store.createTrip(porto);
+    await runTripJob(id, { ...deps, llm });
+    expect((await store.getDays(id))[0].dayTripTown).toBe("브라가");
+
+    target = 1;
+    await runDayRegeneration(id, 1, { ...deps, llm });
+    const after = await store.getDays(id);
+    expect(after[0].dayTripTown).toBe("브라가");
+    expect(after[1].dayTripTown).toBeNull();
+    expect((await store.getMeta(id))!.warnings.some((w) => w.includes("브라가") && w.includes("무시"))).toBe(true);
+  });
+
+  it("비용 상한으로 중단돼도 다른 일자의 검증 필요 표시를 유지한다", async () => {
+    const { store, deps } = setup();
+    const id = store.createTrip(porto);
+    await runTripJob(id, deps);
+    // day 0을 검증 필요 상태로 만든다
+    const [day0] = await store.getDays(id);
+    await store.saveDays(id, [{ ...day0, needsReview: true }]);
+    store.trips.get(id)!.meta!.needsReviewDays = [0];
+    const before = await store.getDays(id);
+
+    await runDayRegeneration(id, 1, { ...deps, limits: { maxGeminiCalls: 0 } });
+
+    const t = store.trips.get(id)!;
+    expect(t.status).toBe("done");
+    expect(t.errorMessage).toMatch(/Gemini 호출 상한/);
+    expect(t.meta!.needsReviewDays).toEqual([0]);
+    expect(await store.getDays(id)).toEqual(before); // 새 일정이 없으므로 기존 일자 그대로
   });
 });

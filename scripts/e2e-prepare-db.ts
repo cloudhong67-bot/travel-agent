@@ -15,7 +15,7 @@ async function main() {
   await master.$executeRawUnsafe(`IF DB_ID('${name}') IS NULL CREATE DATABASE [${name}]`);
   await master.$disconnect();
 
-  execSync("npx prisma migrate deploy", { env: { ...process.env, DATABASE_URL: url }, stdio: "inherit" });
+  execSync("node scripts/migrate.mjs", { env: { ...process.env, DATABASE_URL: url }, stdio: "inherit" });
 
   const db = createPrismaClient(url);
   await db.$transaction([

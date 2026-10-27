@@ -129,7 +129,9 @@ resource sqlDb 'Microsoft.Sql/servers/databases@2023-08-01-preview' = {
   }
 }
 
-var databaseUrl = 'sqlserver://${sqlServer.properties.fullyQualifiedDomainName}:1433;database=${sqlDb.name};user=${sqlAdminLogin};password=${sqlAdminPassword};encrypt=true;trustServerCertificate=false;connectTimeout=60'
+// connectTimeout은 넣지 않는다: @prisma/adapter-mssql은 이 값을 mssql connectionTimeout(밀리초)에 그대로 넘겨
+// "60"이 60ms가 된다. 기본 15초 + 시작 스크립트의 재시도로 DB 자동 일시중지 해제를 기다린다
+var databaseUrl = 'sqlserver://${sqlServer.properties.fullyQualifiedDomainName}:1433;database=${sqlDb.name};user=${sqlAdminLogin};password=${sqlAdminPassword};encrypt=true;trustServerCertificate=false'
 
 // ---------- Container Apps ----------
 

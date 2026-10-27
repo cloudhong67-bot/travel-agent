@@ -24,7 +24,7 @@ describe("enforceAssignment (주어진 POI 키만 사용)", () => {
     );
     expect(days.get(0)?.stops.map((s) => s.poi.key)).toEqual(["P01"]);
     expect(days.get(1)).toMatchObject({ title: "자유 일정", stops: [] }); // 누락 일자
-    expect(warnings.join("\n")).toMatch(/P99[\s\S]*중복[\s\S]*day 5[\s\S]*day 1/);
+    expect(warnings.join("\n")).toMatch(/P99[\s\S]*중복[\s\S]*6일차[\s\S]*2일차/);
   });
 
   it("근교 도시는 당일치기 목록에 있는 것만, 3일 미만이면 무시", () => {

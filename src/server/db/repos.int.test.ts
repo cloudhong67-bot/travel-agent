@@ -60,6 +60,22 @@ describe.skipIf(!dbUrl)("Repository (SQL Server)", () => {
     expect(await db.tripDay.count()).toBe(0); // cascade
   });
 
+  it("일자 재생성 선점: 완료된 여행만, 작업 중·실패·범위 밖은 거절", async () => {
+    const created = await trips.createWithDailyLimit(input, { limit: 10 });
+    if (!created.ok) throw new Error("create failed");
+    const id = created.trip.id;
+
+    expect(await trips.claimForRegeneration(id, 0)).toBe("busy"); // queued
+    await trips.updateProgress(id, { status: "failed", progress: 100 });
+    expect(await trips.claimForRegeneration(id, 0)).toBe("failed");
+    await trips.updateProgress(id, { status: "done", progress: 100 });
+    expect(await trips.claimForRegeneration(id, 3)).toBe("badDay");
+    expect(await trips.claimForRegeneration(id, 1)).toBe("ok");
+    expect(await trips.getProgress(id)).toMatchObject({ status: "running", step: "assign", progress: 0 });
+    expect(await trips.claimForRegeneration(id, 1)).toBe("busy");
+    expect(await trips.claimForRegeneration("00000000-0000-0000-0000-000000000000", 0)).toBe("notFound");
+  });
+
   it("하루 한도: 서울 날짜 기준, 삭제해도 사용량은 남는다", async () => {
     const day1 = new Date("2026-10-27T03:00:00Z"); // 서울 12:00
     for (let i = 0; i < 2; i++) expect((await trips.createWithDailyLimit(input, { limit: 2, now: day1 })).ok).toBe(true);

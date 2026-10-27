@@ -104,7 +104,7 @@ function buildRegistry(): OpenAPIRegistry {
       202: json(RegenerateDayResponseSchema, "재생성 시작"),
       400: error("dayIndex 범위 오류"),
       404: error("없음"),
-      409: error("이미 작업 중"),
+      409: error("이미 작업 중이거나 생성에 실패한 여행"),
       ...unauthorized,
     },
   });

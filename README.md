@@ -73,7 +73,7 @@ docker run --rm -p 3200:3000 --env-file .env.local \
 curl http://localhost:3200/api/healthz
 ```
 
-컨테이너는 시작할 때 `prisma migrate deploy`를 실행한 뒤 `node server.js`(Next standalone)를 띄운다. 배포·운영 절차는 [docs/RUNBOOK.md](docs/RUNBOOK.md).
+컨테이너는 시작할 때 `scripts/migrate.mjs`(Prisma CLI 없는 경량 실행기, `prisma migrate deploy`와 같은 기록 방식)로 마이그레이션을 적용한 뒤 `node server.js`(Next standalone)를 띄운다. 배포·운영 절차는 [docs/RUNBOOK.md](docs/RUNBOOK.md).
 
 ## E2E (Playwright)
 

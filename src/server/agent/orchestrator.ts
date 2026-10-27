@@ -288,9 +288,10 @@ function applyValidation(plan: DayPlan): DayPlan {
 /** 배분·최적화·검증. 실패한 날만 최대 2회 다시 배분·최적화하고, 그래도 실패하면 "검증 필요"로 표시 */
 async function buildItinerary(ctx: PlanContext, dayIndexes: number[], extraFeedback?: string) {
   const { job, trip, city } = ctx;
-  const usedElsewhere = new Set(
-    [...ctx.plans.values()].filter((p) => !dayIndexes.includes(p.dayIndex)).flatMap((p) => p.stops.map((s) => s.key)),
-  );
+  const others = [...ctx.plans.values()].filter((p) => !dayIndexes.includes(p.dayIndex));
+  const usedElsewhere = new Set(others.flatMap((p) => p.stops.map((s) => s.key)));
+  // 재생성 시 다른 일자의 당일치기 도시를 다시 배정하지 않도록 뺀다
+  const townsElsewhere = new Set(others.map((p) => p.dayTripTown));
   const available = (exclude: Set<string>) => city.pois.filter((p) => !exclude.has(p.key));
 
   await progress(job, "assign", `${dayIndexes.length}일 일정을 배분하는 중`);
@@ -300,7 +301,7 @@ async function buildItinerary(ctx: PlanContext, dayIndexes: number[], extraFeedb
     cityName: city.name,
     dayIndexes,
     pois: available(usedElsewhere),
-    nearbyTowns: ctx.nearby,
+    nearbyTowns: ctx.nearby.filter((t) => !townsElsewhere.has(t.name)),
     feedback: extraFeedback,
   });
   job.meta.warnings.push(...first.warnings);
@@ -355,11 +356,22 @@ function finalizeMeta(job: Job, plans: Map<number, DayPlan>) {
   job.stepSpan = undefined;
 }
 
-async function savePartialAndFinish(job: Job, plans: Map<number, DayPlan>, nearby: NearbyTown[], error: BudgetExceededError) {
+/**
+ * @param plans 여행 전체 일자 (meta.needsReviewDays 계산용)
+ * @param saveDays 저장할 일자. 생략하면 plans 전체 (일자 재생성은 새로 만든 일자만 저장)
+ */
+async function savePartialAndFinish(
+  job: Job,
+  plans: Map<number, DayPlan>,
+  nearby: NearbyTown[],
+  error: BudgetExceededError,
+  saveDays?: number[],
+) {
   job.meta.partial = true;
   for (const p of plans.values()) p.needsReview = p.needsReview || !p.validation.passed;
   finalizeMeta(job, plans);
-  if (plans.size) await job.store.saveDays(job.tripId, [...plans.values()]);
+  const toSave = [...plans.values()].filter((p) => !saveDays || saveDays.includes(p.dayIndex));
+  if (toSave.length) await job.store.saveDays(job.tripId, toSave);
   if (nearby.length) await job.store.saveNearby(job.tripId, nearby);
   await job.store.finish(job.tripId, {
     status: "done",
@@ -462,6 +474,7 @@ export function runDayRegeneration(tripId: string, dayIndex: number, deps: Agent
 async function runDayRegenerationInner(tripId: string, dayIndex: number, deps: AgentDeps): Promise<void> {
   const job = createJob(tripId, deps);
   const plans = new Map<number, DayPlan>();
+  let current: DayPlan | undefined;
   try {
     const trip = await deps.store.getTrip(tripId);
     if (!trip) return;
@@ -476,7 +489,7 @@ async function runDayRegenerationInner(tripId: string, dayIndex: number, deps: A
     if (meta) job.meta = { ...meta, partial: false, stepDurationsMs: {} };
 
     for (const d of days) plans.set(d.dayIndex, d);
-    const current = plans.get(dayIndex);
+    current = plans.get(dayIndex);
     plans.delete(dayIndex);
 
     const maps = meterMaps(deps.mapsFor(city.countryCode), job.budget);
@@ -496,8 +509,11 @@ async function runDayRegenerationInner(tripId: string, dayIndex: number, deps: A
     await deps.store.saveDays(tripId, [plans.get(dayIndex)!]);
     await deps.store.finish(tripId, { status: "done", meta: job.meta, errorMessage: null, message: `day ${dayIndex + 1} 재생성 완료` });
   } catch (error) {
+    // 새 일정을 만들기 전에 실패했다면 기존 일자를 되돌려 needsReviewDays가 DB의 일정과 맞게 한다
+    const regenerated = plans.has(dayIndex);
+    if (!regenerated && current) plans.set(dayIndex, current);
     if (error instanceof BudgetExceededError) {
-      await savePartialAndFinish(job, new Map([...plans].filter(([i]) => i === dayIndex)), [], error);
+      await savePartialAndFinish(job, plans, [], error, regenerated ? [dayIndex] : []);
     } else {
       // 재생성 실패가 기존 일정까지 실패로 만들지 않도록 done을 유지하고 오류만 남긴다
       console.error(`[agent] trip ${tripId} day ${dayIndex} regeneration failed`, error);

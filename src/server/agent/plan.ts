@@ -185,9 +185,9 @@ export async function planDay(args: {
     try {
       const route = await maps.routeGeometry([toLatLng(base), ...stops.map(toLatLng), toLatLng(base)], routeMode);
       if (route.supported) routeGeo = route.geometry;
-      else args.warnings.push(`day ${assignment.dayIndex} 경로선: ${route.reason}`);
+      else args.warnings.push(`${assignment.dayIndex + 1}일차 경로선: ${route.reason}`);
     } catch (error) {
-      args.warnings.push(`day ${assignment.dayIndex} 경로선을 만들지 못했습니다: ${(error as Error).message.slice(0, 120)}`);
+      args.warnings.push(`${assignment.dayIndex + 1}일차 경로선을 만들지 못했습니다: ${(error as Error).message.slice(0, 120)}`);
     }
   }
 

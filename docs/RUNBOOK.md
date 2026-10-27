@@ -141,7 +141,7 @@ az deployment sub create   --name trippilot-init --location "$AZURE_LOCATION" \
 | `NAVER_MAPS_CLIENT_SECRET` | ✅ | | NCP Maps Client Secret |
 | `NAVER_SEARCH_CLIENT_ID` | ✅ | | developers.naver.com 검색 API |
 | `NAVER_SEARCH_CLIENT_SECRET` | ✅ | | developers.naver.com 검색 API |
-| `DATABASE_URL` | ✅ | | `sqlserver://<sqlServerFqdn>:1433;database=trippilot;user=trippilotadmin;password=<SQL_ADMIN_PASSWORD>;encrypt=true;trustServerCertificate=false;connectTimeout=60` |
+| `DATABASE_URL` | ✅ | | `sqlserver://<sqlServerFqdn>:1433;database=trippilot;user=trippilotadmin;password=<SQL_ADMIN_PASSWORD>;encrypt=true;trustServerCertificate=false` (`connectTimeout`은 넣지 않는다 — 어댑터가 밀리초로 해석) |
 | `APP_ACCESS_TOKEN` | ✅ | | 3단계와 같은 값 |
 
 > `infra.yml`은 앱 비밀값을 GitHub에서 받지 않고 **실행 중인 Container App에서 이어받는다**(`infra/scripts/export-current-app-state.sh`). Bicep 재배포가 secret 목록을 덮어써도 마지막 배포 값이 유지된다.
@@ -242,8 +242,9 @@ az monitor log-analytics workspace list -g "$RG" --query "[].{name:name, dailyCa
 
 | 증상 | 원인·조치 |
 | --- | --- |
-| 첫 요청이 1~2분 걸림 | 최소 복제본 0 + SQL 자동 일시중지. 컨테이너 시작 시 `migrate deploy`가 DB를 깨우며 최대 6회(15초 간격) 재시도 |
-| 리비전이 Ready가 안 됨 | `az containerapp logs show ... --type system` / `--type console`. 마이그레이션 실패면 `[start] prisma migrate deploy 실패` 로그 |
+| 첫 요청이 1~2분 걸림 | 최소 복제본 0 + SQL 자동 일시중지. 컨테이너 시작 시 마이그레이션 실행기(`migrate/migrate.mjs`)가 DB를 깨우며 최대 6회(15초 간격) 재시도. 배포 스모크는 최대 240초 기다린다 |
+| 리비전이 Ready가 안 됨 | `az containerapp logs show ... --type system` / `--type console`. 마이그레이션 실패면 `[migrate] ...`·`[start] 마이그레이션 실패` 로그 |
+| `실패한 마이그레이션 기록이 있어 중단합니다` | 이전 시작에서 마이그레이션 SQL이 실패해 `_prisma_migrations`에 미완료 기록이 남음. 원인을 고친 뒤 로컬에서 운영 `DATABASE_URL`로 `npx prisma migrate resolve --rolled-back <이름>` 실행 후 재배포 |
 | DB가 이번 달 계속 꺼져 있음 | 무료 오퍼 한도 소진 → `AutoPause`. 포털에서 "추가 요금으로 계속 사용"(BillOverUsage)으로 바꾸거나 다음 달까지 대기 (되돌릴 수 없음에 유의) |
 | 403 (Forbidden) | IP 허용 목록 밖. `ALLOWED_IP_RANGES` 변수 수정 → Infra 실행, 또는 임시로 `az containerapp ingress access-restriction set` |
 | Application Insights에 데이터 없음 | Container App secret `appinsights-connection-string` 확인. 연결 문자열이 없으면 앱은 원격 측정 없이 동작한다 |

@@ -114,7 +114,8 @@ export function enforceAssignment(
 
   for (const day of assignment.days) {
     if (!allowedDays.has(day.dayIndex) || days.has(day.dayIndex)) {
-      warnings.push(`요청하지 않은 일자(day ${day.dayIndex}) 배분을 무시했습니다.`);
+      // 경고는 화면에 그대로 나가므로 1부터 세는 일차로 쓴다 (dayIndex는 0부터)
+      warnings.push(`요청하지 않은 일자(${day.dayIndex + 1}일차) 배분을 무시했습니다.`);
       continue;
     }
     let dayTripTown: string | null = null;
@@ -147,7 +148,7 @@ export function enforceAssignment(
 
   for (const i of opts.dayIndexes) {
     if (!days.has(i)) {
-      warnings.push(`day ${i} 배분이 누락되어 자유 일정으로 두었습니다.`);
+      warnings.push(`${i + 1}일차 배분이 누락되어 자유 일정으로 두었습니다.`);
       days.set(i, { dayIndex: i, title: "자유 일정", dayTripTown: null, stops: [] });
     }
   }

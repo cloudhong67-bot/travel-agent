@@ -40,7 +40,8 @@
 | `src/app/(main)` | 화면: `/`(새 여행), `/trips`(목록), `/trips/[id]`(진행·결과). `src/app/unlock`은 헤더 없는 잠금 해제 화면 |
 | `src/components` | `ui/`(shadcn 생성물), `app/`(헤더·테마·Providers), `trip/`(폼·진행·결과 탭·목록), `map/`(`TripMap` → KR이면 `NaverMap`, 그 외 `GoogleMap`, 같은 props) |
 | `src/lib/api-client.ts` | 브라우저 API 클라이언트. 응답은 `schemas.ts`로 검증 |
-| `Dockerfile`, `docker/start.sh` | 멀티스테이지 이미지(standalone). 시작 시 `prisma migrate deploy` → `node server.js` |
+| `Dockerfile`, `docker/start.sh` | 멀티스테이지 이미지(standalone). 시작 시 `scripts/migrate.mjs`(마이그레이션) → `node server.js` |
+| `scripts/migrate.mjs` | 경량 마이그레이션 실행기 (`prisma migrate deploy` 대체, Prisma CLI 없이 앱의 mssql 어댑터 사용). `_prisma_migrations`·체크섬을 Prisma와 같게 기록. 통합 테스트·E2E DB 준비도 이것을 쓴다 |
 | `infra/` | Bicep(구독 범위 `main.bicep` + `modules/app.bicep`), 매개변수는 `main.bicepparam`이 환경변수에서만 읽음 |
 | `.github/workflows/` | `ci.yml`(PR), `deploy.yml`(main → ACA), `infra.yml`(what-if → 승인 → 배포) |
 | `docs/RUNBOOK.md` | 최초 설정·롤백·비용·비밀값 교체 절차 |
@@ -70,7 +71,8 @@
 - **API 스키마의 단일 원천은 `src/lib/schemas.ts`.** 엔드포인트를 추가·변경하면 `src/lib/openapi.ts`에도 등록한다.
 - API 응답의 날짜는 ISO 8601 문자열, 오류는 항상 `{ code, message }` (`src/server/api/respond.ts`). 내부 예외 메시지는 노출하지 않는다.
 - "오늘"(하루 생성 한도·사용량 집계)은 Asia/Seoul 날짜 기준 (`src/server/limits.ts`).
-- 스키마 변경 시 `npm run db:migrate -- --name <이름>`으로 마이그레이션을 만들고 함께 커밋한다.
+- 스키마 변경 시 `npm run db:migrate -- --name <이름>`으로 마이그레이션을 만들고 함께 커밋한다. 운영 적용은 `scripts/migrate.mjs`가 하므로 마이그레이션은 Prisma가 생성한 단일 배치 SQL 그대로 둔다 (`GO` 구분자 금지).
+- `DATABASE_URL`에 `connectTimeout`을 넣지 않는다 (`@prisma/adapter-mssql`이 밀리초로 해석).
 - **비밀값 하드코딩 금지.** 환경변수는 `src/lib/env.ts`(`getEnv()`)로만 읽고, 새 변수는 `envSchema`와 `.env.example`에 함께 추가한다. 로그·오류 메시지에 키가 나가지 않게 한다(`redactUrl`).
 - **커밋 전 `npm run lint`, `npm run typecheck`, `npm run test` 통과** (한 번에: `npm run check`).
 - 모든 외부 호출은 `src/lib/http.ts`의 `fetchJson` / `withTimeoutRetry`를 거친다 (15초 타임아웃 + 1회 재시도).

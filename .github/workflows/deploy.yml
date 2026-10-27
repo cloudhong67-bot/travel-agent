@@ -91,6 +91,7 @@ jobs:
             "app-access-token=${APP_ACCESS_TOKEN}"
 
       - name: 새 리비전 배포
+        id: update
         run: |
           # 최초 Bicep 배포는 퀵스타트 이미지(포트 80)로 만들어지므로 앱 포트로 맞춘다 (이미 3000이면 변화 없음)
           az containerapp ingress update -n "$APP" -g "$RG" --target-port 3000 --output none
@@ -118,12 +119,13 @@ jobs:
           az containerapp ingress access-restriction set -n "$APP" -g "$RG" --output none \
             --rule-name gh-smoke --ip-address "${RUNNER_IP}/32" --action Allow --description "GitHub Actions smoke (temporary)"
 
-      - name: 스모크 테스트 (/api/healthz, 콜드스타트 고려 최대 120초)
+      - name: 스모크 테스트 (/api/healthz, 콜드스타트 고려 최대 240초)
         id: smoke
         run: |
           FQDN=$(az containerapp show -n "$APP" -g "$RG" --query properties.configuration.ingress.fqdn -o tsv)
           EXPECTED="${APP}--${GITHUB_SHA::7}-${GITHUB_RUN_ATTEMPT}"
-          for i in $(seq 1 24); do
+          # DB 자동 일시중지 해제(약 1분) + 시작 시 마이그레이션 재시도 + 시작 프로브(최대 180초)를 기다린다
+          for i in $(seq 1 48); do
             CODE=$(curl -s -o /tmp/healthz.json -w '%{http_code}' --max-time 10 "https://${FQDN}/api/healthz" || true)
             READY=$(az containerapp show -n "$APP" -g "$RG" --query properties.latestReadyRevisionName -o tsv)
             echo "try ${i}: http=${CODE} ready=${READY}"
@@ -133,11 +135,12 @@ jobs:
             fi
             sleep 5
           done
-          echo "::error::새 리비전(${EXPECTED})이 120초 안에 정상 응답하지 않았습니다"
+          echo "::error::새 리비전(${EXPECTED})이 240초 안에 정상 응답하지 않았습니다"
           exit 1
 
       - name: 실패 시 직전 리비전으로 복귀
-        if: failure() && env.PREV_REVISION != ''
+        # 리비전을 바꾸기 전(빌드·푸시 등)에 실패했다면 트래픽은 그대로이므로 되돌리지 않는다
+        if: failure() && env.PREV_REVISION != '' && steps.update.outcome != 'skipped'
         run: |
           echo "::warning::배포 실패 — ${PREV_REVISION}을(를) 복사해 트래픽을 되돌립니다"
           # 단일 리비전 모드: 직전 리비전의 템플릿(이미지·환경변수)으로 새 리비전을 만든다

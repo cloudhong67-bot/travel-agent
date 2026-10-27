@@ -18,6 +18,7 @@ export const POST = withErrorHandling(async (_request: Request, { params }: Ctx)
   if (claim === "notFound") return notFound("여행");
   if (claim === "badDay") return apiError(400, "VALIDATION_ERROR", `dayIndex는 여행 일수보다 작아야 합니다.`);
   if (claim === "busy") return apiError(409, "CONFLICT", "이 여행은 이미 작업 중입니다. 완료 후 다시 시도하세요.");
+  if (claim === "failed") return apiError(409, "CONFLICT", "생성에 실패한 여행은 일자를 다시 만들 수 없습니다. 여행을 새로 만드세요.");
 
   startDayRegeneration(id, dayIndex);
   return Response.json(

@@ -170,7 +170,7 @@ describe("기타 엔드포인트", () => {
     expect(runtime.startDayRegeneration).toHaveBeenCalledWith(ID, 1);
 
     runtime.startDayRegeneration.mockClear();
-    for (const [claim, status, code] of [["notFound", 404, "NOT_FOUND"], ["busy", 409, "CONFLICT"], ["badDay", 400, "VALIDATION_ERROR"]] as const) {
+    for (const [claim, status, code] of [["notFound", 404, "NOT_FOUND"], ["busy", 409, "CONFLICT"], ["failed", 409, "CONFLICT"], ["badDay", 400, "VALIDATION_ERROR"]] as const) {
       repo.tripRepo.claimForRegeneration.mockResolvedValueOnce(claim);
       const res = await call();
       expect(res.status).toBe(status);
