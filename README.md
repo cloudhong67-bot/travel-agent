@@ -60,7 +60,23 @@ npm run test:coverage  # v8 커버리지 → coverage/index.html
 
 Docker가 없으면 통합 테스트는 경고와 함께 건너뛴다. CI에서는 `REQUIRE_DOCKER=1`로 실행해 건너뛰지 않고 실패하게 한다.
 
-## 컨테이너
+## 내 PC에서 운영과 같은 구성으로 실행 (Azure 없이)
+
+운영 이미지(Dockerfile)와 SQL Server를 docker compose로 함께 띄운다. 값은 모두 `.env.local`에서 읽는다.
+
+```bash
+npm run local:up        # 이미지 빌드 → DB 생성(없으면) → 마이그레이션 → http://localhost:3300
+npm run local:up:mock   # 외부 API 대신 목 데이터(키·결제 불필요). 도시는 '포르투'·'경주'만, DB는 trippilot_mock
+npm run local:logs      # 앱 로그
+npm run local:down      # 중지 (DB 데이터는 mssql-data 볼륨에 유지)
+```
+
+- 브라우저에서 `http://localhost:3300` → `/unlock`에 `.env.local`의 `APP_ACCESS_TOKEN` 입력
+- 포트 변경: `.env.local`에 `LOCAL_APP_PORT=<포트>` (기본 3300, 개발 서버 3000과 동시 실행 가능)
+- 실제 모드는 개발 서버와 같은 `trippilot` DB를 쓴다. 코드를 바꿨으면 `npm run local:up`을 다시 실행하면 이미지를 새로 빌드한다
+- Google 브라우저 키에 HTTP 리퍼러 제한을 걸었다면 `http://localhost:3300/*`도 허용해야 지도가 뜬다
+
+## 컨테이너 (단독 실행)
 
 ```bash
 docker build -t trippilot:local \

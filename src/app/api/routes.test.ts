@@ -212,10 +212,11 @@ describe("POST /api/unlock", () => {
   const form = (fields: Record<string, string>) =>
     new Request("https://app.example/api/unlock", { method: "POST", body: new URLSearchParams(fields) });
 
-  it("맞는 토큰이면 httpOnly·Secure 쿠키를 설정하고 next로 303", async () => {
+  it("맞는 토큰이면 httpOnly·Secure 쿠키를 설정하고 next로 303 (상대 경로)", async () => {
     const res = await unlock(form({ token: "test-access-token-0123456789", next: "/trips" }));
     expect(res.status).toBe(303);
-    expect(res.headers.get("location")).toBe("https://app.example/trips");
+    // standalone 서버의 request.url은 바인딩 주소(0.0.0.0:3000)라 절대 URL을 만들면 프록시 뒤에서 깨진다
+    expect(res.headers.get("location")).toBe("/trips");
     const cookie = res.headers.get("set-cookie")!;
     expect(cookie).toMatch(/^tp_access=/);
     expect(cookie).toContain("HttpOnly");
@@ -231,9 +232,15 @@ describe("POST /api/unlock", () => {
     vi.useRealTimers();
     expect(res.status).toBe(303);
     expect(res.headers.get("set-cookie")).toBeNull();
-    const location = new URL(res.headers.get("location")!);
-    expect(location.pathname).toBe("/unlock");
-    expect(location.searchParams.get("error")).toBe("1");
-    expect(location.searchParams.get("next")).toBeNull();
+    expect(res.headers.get("location")).toBe("/unlock?error=1");
+  });
+
+  it("토큰 형식이 틀려도(빈 값) 원래 경로(next)는 유지한다", async () => {
+    vi.useFakeTimers();
+    const pending = unlock(form({ token: "", next: "/trips" }));
+    await vi.advanceTimersByTimeAsync(500);
+    const res = await pending;
+    vi.useRealTimers();
+    expect(res.headers.get("location")).toBe("/unlock?error=1&next=%2Ftrips");
   });
 });

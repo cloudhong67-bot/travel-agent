@@ -87,6 +87,7 @@
 - Naver Directions는 자동차 경로만 지원: driving 외 모드는 `{ supported: false }`를 반환하고 호출하지 않는다.
 - Google 검색 그라운딩 결과를 화면에 보여줄 때는 `searchEntryPointHtml`(검색 추천)도 함께 표시한다 (Gemini API 약관).
 - UI 규칙: 한국어, 다크 모드(next-themes), 로딩은 Skeleton·오류는 Toast(sonner), 375px에서 세로 배치. 지도 SDK의 로고·저작권 표기를 가리지 않는다.
+- 리다이렉트 `Location`은 상대 경로로 보낸다. standalone 서버의 `request.url`은 바인딩 주소(`0.0.0.0:3000`)라 절대 URL을 만들면 프록시·포트 매핑 뒤에서 깨진다.
 - 배포 규칙: 워크플로·Bicep·코드에 비밀값을 쓰지 않는다 (예시는 `<placeholder>`). 비밀값은 GitHub Environment Secrets → Container App secret(`secretref:`)으로만 흐른다. 새 비밀값을 추가하면 `deploy.yml`·`infra/modules/app.bicep`·`export-current-app-state.sh`·RUNBOOK을 함께 고친다.
 - Bicep을 고치면 `bicep build infra/main.bicep`과 `bicep lint`로 확인한다. 워크플로는 actionlint로 확인한다.
 - 클라이언트 코드에서 서버 전용 env를 참조하지 않는다. 빌드 후 `npm run check:bundle`로 번들에 비밀값이 없는지 확인한다.
@@ -99,6 +100,9 @@
 npm run dev            # 개발 서버
 npm run db:up          # 로컬 SQL Server 컨테이너 (docker compose)
 npm run db:migrate     # prisma migrate dev
+npm run local:up       # 운영 이미지 + SQL Server를 docker compose로 (http://localhost:3300, 실제 API)
+npm run local:up:mock  # 같은 구성 + 외부 API 목 (포르투·경주, DB trippilot_mock)
+npm run local:down     # 로컬 구성 중지
 npm run check          # lint + typecheck + test
 npm run test:unit      # 단위 (MSW, DB 없음)
 npm run test:int       # 통합 (Testcontainers, Docker 필요)

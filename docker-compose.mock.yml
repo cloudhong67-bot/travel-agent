@@ -1,0 +1,11 @@
+# npm run local:up:mock — 외부 API(Gemini·Google 지도·Naver·Wikipedia) 대신 서버 안의 MSW 목을 쓴다.
+# 실제 키·결제 없이 전체 흐름(생성 → 진행 → 결과 탭)을 확인할 때 쓴다. 결과는 고정된 예시 데이터(포르투 등)다.
+# 목 데이터가 실제 DB를 오염시키지 않도록 별도 DB(trippilot_mock)를 쓴다.
+services:
+  db-init:
+    environment:
+      LOCAL_DB_NAME: trippilot_mock
+  app:
+    environment:
+      E2E_MOCK_EXTERNALS: "1"
+      DATABASE_URL: sqlserver://mssql:1433;database=trippilot_mock;user=sa;password=${MSSQL_SA_PASSWORD};encrypt=true;trustServerCertificate=true
