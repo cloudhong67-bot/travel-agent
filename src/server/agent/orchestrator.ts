@@ -5,6 +5,7 @@
  * 상태의 기준은 DB이므로 어느 복제본이 작업을 돌려도 SSE로 구독할 수 있다.
  */
 import { weekdayFromKo } from "@/lib/hours";
+import { stayLabel } from "@/lib/labels";
 import { withSpan } from "@/server/telemetry";
 import type { GeocodeResult, MapsProvider, TravelMode } from "@/server/adapters/maps/types";
 import { assignDays, fallbackAssignment, type AssignResult, type DayAssignment } from "./assign";
@@ -12,6 +13,7 @@ import { BudgetExceededError } from "./budget";
 import { collectHistory, collectNearbyTowns, collectTourism, lookupRecommended, mergePois, searchCityPois } from "./collect";
 import { AgentError, AgentJob } from "./job";
 import { planDay, tripMode } from "./plan";
+import { recommendStay } from "./stay";
 import { assignKeys } from "./poiUtils";
 import { countryNameKo } from "./prompts/common";
 import {
@@ -95,7 +97,7 @@ async function collectAll(ctx: CollectContext, cached: CityData | null): Promise
 
   const [history, tourism, searched, nearby] = await Promise.allSettled([
     cached ? Promise.resolve(cached.background) : tracked("역사·배경 조사", collectHistory(job.llm, deps.wiki, trip.cityName, geo.name)),
-    cached ? Promise.resolve(cached.tourismBoard) : tracked("관광청 조사", collectTourism(job.search, countryName, geo.name, countryCode)),
+    cached ? Promise.resolve(cached.tourismBoard) : tracked("관광청 조사", collectTourism(job.search, deps.wiki, countryName, geo.name, countryCode)),
     cached ? Promise.resolve(cached.pois) : tracked("명소 검색", searchCityPois(maps, center, geo.name)),
     isKr
       ? Promise.resolve({ towns: [] as NearbyTown[], warnings: [] as string[] })
@@ -168,6 +170,8 @@ interface PlanContext {
   base: { name: string; lat: number; lon: number };
   /** 진행 중 만들어진 일자 (예산 초과 시 부분 저장용) */
   plans: Map<number, DayPlan>;
+  /** 일정 조정 때 사용자가 적은 요청 (배분 프롬프트에 그대로 전달) */
+  userRequest?: string;
 }
 
 type AssignArgs = Parameters<typeof assignDays>[0];
@@ -232,6 +236,7 @@ async function buildItinerary(ctx: PlanContext, dayIndexes: number[], extraFeedb
     pois: available(usedElsewhere),
     nearbyTowns: ctx.nearby.filter((t) => !townsElsewhere.has(t.name)),
     feedback: extraFeedback,
+    userRequest: ctx.userRequest,
   });
   job.meta.warnings.push(...first.warnings);
   await job.progress("assign", "일자 배분 완료", 1);
@@ -261,6 +266,7 @@ async function buildItinerary(ctx: PlanContext, dayIndexes: number[], extraFeedb
         pois: available(keep),
         nearbyTowns: ctx.nearby.filter((t) => ![...ctx.plans.values()].some((p) => p.dayTripTown === t.name && !failing.includes(p.dayIndex))),
         feedback,
+        userRequest: ctx.userRequest,
       });
     } catch (error) {
       // 재시도는 개선 시도일 뿐이므로, LLM이 실패하면 지금 일정을 "검증 필요"로 남기고 끝낸다
@@ -295,8 +301,9 @@ async function runTripJobInner(tripId: string, deps: AgentDeps): Promise<void> {
   const plans = new Map<number, DayPlan>();
   let nearby: NearbyTown[] = [];
   try {
-    const trip = await deps.store.getTrip(tripId);
-    if (!trip) return; // 삭제됨
+    const stored = await deps.store.getTrip(tripId);
+    if (!stored) return; // 삭제됨
+    let trip = stored;
 
     // 1. 입력 정규화 (PRD: 항상 Google Geocoding으로 국가코드 확정)
     await job.progress("normalize", `'${trip.cityName}' 위치를 확인하는 중`);
@@ -325,9 +332,18 @@ async function runTripJobInner(tripId: string, deps: AgentDeps): Promise<void> {
       job.meta.notices.push("대중교통 이동시간은 지도 API 기준이며, 데이터가 없는 구간은 자동차 시간으로 대체했습니다.");
     }
 
+    // 3-1. 추천 체류 일수 (명소 규모). "추천 일수로 자동"이면 여행 일수를 이 값으로 바꾼다
+    const stay = recommendStay(collected.city.pois, nearby);
+    job.meta.recommendedStay = stay;
+    if (trip.autoDays && stay.days !== trip.days) {
+      trip = { ...trip, days: stay.days };
+      await deps.store.updateSchedule(tripId, { days: stay.days });
+    }
+    if (trip.autoDays) job.meta.notices.push(`추천 체류 일수(${stayLabel(stay.days)})로 일정을 만들었습니다 — ${stay.reason}.`);
+
     // 4~6. 배분 → 최적화 → 검증
     const ctx: PlanContext = { job, trip, city: collected.city, maps, mode, nearby, base, plans };
-    await buildItinerary(ctx, Array.from({ length: trip.days }, (_, i) => i));
+    await buildItinerary(ctx, dayRange(trip.days));
 
     // 7. 저장
     await job.progress("save", "결과를 저장하는 중");
@@ -345,6 +361,39 @@ async function runTripJobInner(tripId: string, deps: AgentDeps): Promise<void> {
   }
 }
 
+const dayRange = (days: number) => Array.from({ length: days }, (_, i) => i);
+
+/** 이미 만든 여행을 다시 짤 때(일자 재생성·일정 조정) 필요한 것: 저장된 도시·근교·일정·meta와 지도 설정 */
+async function loadSavedTrip(job: AgentJob, deps: AgentDeps, tripId: string) {
+  const trip = await deps.store.getTrip(tripId);
+  if (!trip) return null;
+  if (!trip.cityId) throw new AgentError("도시 정보가 없어 다시 만들 수 없습니다. 여행을 새로 만드세요.");
+  const [city, days, nearby, meta] = await Promise.all([
+    deps.store.getCity(trip.cityId),
+    deps.store.getDays(tripId),
+    deps.store.getNearby(tripId),
+    deps.store.getMeta(tripId),
+  ]);
+  if (!city) throw new AgentError("도시 정보를 찾을 수 없습니다.");
+  // 이전 버전에서 저장된 meta에는 recommendedStay가 없을 수 있다
+  if (meta) job.meta = { ...meta, recommendedStay: meta.recommendedStay ?? null, partial: false, stepDurationsMs: {} };
+
+  const pois = assignKeys(city.pois);
+  // 저장된 일정은 이전 키로 기록돼 있으므로 POI id 기준으로 새 키에 맞춘다
+  const keyById = new Map(pois.map((p) => [p.id, p.key]));
+  for (const d of days) for (const s of d.stops) s.key = (s.poiId && keyById.get(s.poiId)) || s.key;
+
+  return {
+    trip,
+    city: { ...city, pois },
+    days,
+    nearby,
+    maps: job.mapsFor(city.countryCode),
+    mode: tripMode(trip.transport, city.countryCode),
+    base: job.meta.base ?? { name: `${city.name} 중심 (숙소 거점)`, lat: city.lat, lon: city.lon },
+  };
+}
+
 /** 특정 일자만 4~6단계 재실행 (FR-11). 다른 일자에 쓴 POI는 피한다 */
 export function runDayRegeneration(tripId: string, dayIndex: number, deps: AgentDeps): Promise<void> {
   return withSpan("agent.regenerateDay", { "trippilot.trip_id": tripId, "trippilot.day_index": dayIndex }, () =>
@@ -357,31 +406,13 @@ async function runDayRegenerationInner(tripId: string, dayIndex: number, deps: A
   const plans = new Map<number, DayPlan>();
   let current: DayPlan | undefined;
   try {
-    const trip = await deps.store.getTrip(tripId);
-    if (!trip) return;
-    if (!trip.cityId) throw new AgentError("도시 정보가 없어 재생성할 수 없습니다. 여행을 다시 만드세요.");
-    const [city, days, nearby, meta] = await Promise.all([
-      deps.store.getCity(trip.cityId),
-      deps.store.getDays(tripId),
-      deps.store.getNearby(tripId),
-      deps.store.getMeta(tripId),
-    ]);
-    if (!city) throw new AgentError("도시 정보를 찾을 수 없습니다.");
-    if (meta) job.meta = { ...meta, partial: false, stepDurationsMs: {} };
-
-    for (const d of days) plans.set(d.dayIndex, d);
+    const saved = await loadSavedTrip(job, deps, tripId);
+    if (!saved) return;
+    for (const d of saved.days) plans.set(d.dayIndex, d);
     current = plans.get(dayIndex);
     plans.delete(dayIndex);
 
-    const maps = job.mapsFor(city.countryCode);
-    const mode = tripMode(trip.transport, city.countryCode);
-    const base = job.meta.base ?? { name: `${city.name} 중심 (숙소 거점)`, lat: city.lat, lon: city.lon };
-    const pois = assignKeys(city.pois);
-    // 저장된 일정은 이전 키로 기록돼 있으므로 POI id 기준으로 새 키에 맞춘다
-    const keyById = new Map(pois.map((p) => [p.id, p.key]));
-    for (const p of plans.values()) for (const s of p.stops) s.key = (s.poiId && keyById.get(s.poiId)) || s.key;
-
-    const ctx: PlanContext = { job, trip, city: { ...city, pois }, maps, mode, nearby, base, plans };
+    const ctx: PlanContext = { job, trip: saved.trip, city: saved.city, maps: saved.maps, mode: saved.mode, nearby: saved.nearby, base: saved.base, plans };
     const previous = current?.stops.map((s) => s.name).join(", ");
     await buildItinerary(ctx, [dayIndex], previous ? `사용자가 day ${dayIndex} 재생성을 요청했다. 기존 구성(${previous})과 다르게 짜라.` : undefined);
 
@@ -397,6 +428,54 @@ async function runDayRegenerationInner(tripId: string, dayIndex: number, deps: A
       // 재생성 실패가 기존 일정까지 실패로 만들지 않도록 done을 유지하고 오류만 남긴다
       await job.fail(error, { plans, keepDone: true, fallbackMessage: `day ${dayIndex + 1} 재생성 중 오류가 발생했습니다.` });
     }
+  } finally {
+    await job.flushUsage();
+  }
+}
+
+export interface RescheduleInput {
+  days: number;
+  /** 생략하면 기존 출발일 유지, null이면 날짜 미정 */
+  startDate?: string | null;
+  /** 일정에 반영할 사용자 요청 */
+  request?: string;
+}
+
+/**
+ * 일정 조정: 여행 일수·출발일을 바꾸고 일정 전체를 다시 짠다 (4~6단계, 도시·근교 정보는 재사용).
+ * 실패하면 기존 일정과 일수를 그대로 두고 오류만 남긴다 — 새 일정이 완성됐을 때만 일수·일정을 함께 바꾼다.
+ */
+export function runReschedule(tripId: string, input: RescheduleInput, deps: AgentDeps): Promise<void> {
+  return withSpan("agent.reschedule", { "trippilot.trip_id": tripId, "trippilot.days": input.days }, () => runRescheduleInner(tripId, input, deps));
+}
+
+async function runRescheduleInner(tripId: string, input: RescheduleInput, deps: AgentDeps): Promise<void> {
+  const job = new AgentJob(tripId, deps);
+  const plans = new Map<number, DayPlan>();
+  /** 실패 시 그대로 남는 기존 일정 (검증 필요 표시를 이 기준으로 다시 계산) */
+  let previousDays: DayPlan[] = [];
+  try {
+    const saved = await loadSavedTrip(job, deps, tripId);
+    if (!saved) return;
+    previousDays = saved.days;
+    const startDate = input.startDate === undefined ? saved.trip.startDate : input.startDate;
+    const trip = { ...saved.trip, days: input.days, startDate };
+    job.meta.recommendedStay ??= recommendStay(saved.city.pois, saved.nearby);
+
+    const ctx: PlanContext = { job, trip, city: saved.city, maps: saved.maps, mode: saved.mode, nearby: saved.nearby, base: saved.base, plans, userRequest: input.request };
+    await buildItinerary(ctx, dayRange(trip.days));
+
+    await job.progress("save", `${stayLabel(trip.days)} 일정 저장 중`);
+    await deps.store.updateSchedule(tripId, { days: trip.days, startDate });
+    await job.complete(plans, { saveDays: [...plans.values()], replace: true, message: `${stayLabel(trip.days)} 일정으로 조정 완료` });
+  } catch (error) {
+    // 비용 상한에 걸려도 일부 일자만 바꾸면 일수와 일정이 어긋나므로 기존 일정을 유지한다
+    const reason = error instanceof BudgetExceededError ? new AgentError(`${error.message}: 비용 상한에 도달해 기존 일정을 유지했습니다.`) : error;
+    await job.fail(reason, {
+      plans: new Map(previousDays.map((d) => [d.dayIndex, d])),
+      keepDone: true,
+      fallbackMessage: "일정 조정 중 오류가 발생해 기존 일정을 유지했습니다.",
+    });
   } finally {
     await job.flushUsage();
   }

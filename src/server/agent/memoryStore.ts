@@ -30,6 +30,7 @@ export class MemoryAgentStore implements AgentStore {
       cityName: input.city,
       countryCode: input.countryCode ?? null,
       days: input.days,
+      autoDays: input.autoDays ?? false,
       startDate: input.startDate ?? null,
       style: input.style,
       transport: input.transport,
@@ -93,6 +94,17 @@ export class MemoryAgentStore implements AgentStore {
     const map = this.days.get(tripId) ?? new Map();
     for (const d of days) map.set(d.dayIndex, clone(d));
     this.days.set(tripId, map);
+  }
+
+  async replaceDays(tripId: string, days: DayPlan[]) {
+    this.days.set(tripId, new Map(days.map((d) => [d.dayIndex, clone(d)])));
+  }
+
+  async updateSchedule(tripId: string, schedule: { days: number; startDate?: string | null }) {
+    const t = this.trips.get(tripId);
+    if (!t) return;
+    t.days = schedule.days;
+    if (schedule.startDate !== undefined) t.startDate = schedule.startDate;
   }
 
   async getNearby(tripId: string) {

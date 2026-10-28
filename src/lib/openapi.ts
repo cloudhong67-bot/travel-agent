@@ -11,6 +11,8 @@ import {
   ListTripsQuerySchema,
   ProgressEventSchema,
   RegenerateDayResponseSchema,
+  RescheduleTripRequestSchema,
+  RescheduleTripResponseSchema,
   TripDetailSchema,
   TripIdParamsSchema,
   TripListResponseSchema,
@@ -103,6 +105,26 @@ function buildRegistry(): OpenAPIRegistry {
     responses: {
       202: json(RegenerateDayResponseSchema, "재생성 시작"),
       400: error("dayIndex 범위 오류"),
+      404: error("없음"),
+      409: error("이미 작업 중이거나 생성에 실패한 여행"),
+      ...unauthorized,
+    },
+  });
+
+  registry.registerPath({
+    method: "post",
+    path: "/api/v1/trips/{id}/reschedule",
+    summary: "일정 조정 (일수·출발일 변경 + 요청 반영, 일정 전체 재작성)",
+    description:
+      "도시·근교 정보는 재사용하고 배분·최적화·검증만 다시 돈다. 백그라운드로 실행하고 즉시 202, 진행은 /events SSE. 새 일정이 완성될 때까지 기존 일정이 유지되고, 실패하면 기존 일정을 그대로 둔다. 추천 일수는 TripDetail.meta.recommendedStay.",
+    security,
+    request: {
+      params: TripIdParamsSchema,
+      body: { content: { "application/json": { schema: RescheduleTripRequestSchema } } },
+    },
+    responses: {
+      202: json(RescheduleTripResponseSchema, "일정 조정 시작"),
+      400: error("검증 오류"),
       404: error("없음"),
       409: error("이미 작업 중이거나 생성에 실패한 여행"),
       ...unauthorized,

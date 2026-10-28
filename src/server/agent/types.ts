@@ -1,4 +1,4 @@
-import type { AgentStep, TripStatus, UsageProvider } from "@/lib/schemas";
+import type { AgentStep, BackgroundField, RecommendedStay, TripStatus, UsageProvider } from "@/lib/schemas";
 import type { WikipediaKnowledge } from "@/server/adapters/knowledge/wikipedia";
 import type { LlmProvider, LlmUsage } from "@/server/adapters/llm/types";
 import type { MapsProvider, TravelMode } from "@/server/adapters/maps/types";
@@ -32,9 +32,13 @@ export interface CityBackground {
   bestTime: string | null;
   etiquette: string | null;
   sources: WebSource[];
+  /** 출처 원문 대신 AI(Gemini) 일반 지식으로 채운 항목 */
+  aiFields: BackgroundField[];
 }
 
 export interface TourismInfo {
+  /** official: 공식 관광청 기준, alternative: 위키여행·여행 플랫폼 등 대체 출처 */
+  sourceType: "official" | "alternative";
   summary: string;
   recommended: string[];
   festivals: string[];
@@ -72,6 +76,8 @@ export interface TripInput {
   cityName: string;
   countryCode: string | null;
   days: number;
+  /** true면 추천 체류 일수로 days를 정한다 */
+  autoDays: boolean;
   /** YYYY-MM-DD 또는 null */
   startDate: string | null;
   style: string;
@@ -124,6 +130,8 @@ export interface DayPlan {
 
 export interface TripMeta {
   version: 1;
+  /** 명소 규모로 산정한 추천 체류 일수 (stay.ts) */
+  recommendedStay: RecommendedStay | null;
   base: { name: string; lat: number; lon: number } | null;
   countryCode: string | null;
   travelBasisNotice: string | null;
@@ -185,6 +193,10 @@ export interface AgentStore {
   getDays(tripId: string): Promise<DayPlan[]>;
   /** 해당 일자들만 교체 (없으면 생성) */
   saveDays(tripId: string, days: DayPlan[]): Promise<void>;
+  /** 일정 전체 교체: 기존 일자를 모두 지우고 days로 바꾼다 (일정 조정) */
+  replaceDays(tripId: string, days: DayPlan[]): Promise<void>;
+  /** 여행 일수·출발일 변경 (추천 일수 자동 결정·일정 조정). startDate를 생략하면 그대로 둔다 */
+  updateSchedule(tripId: string, schedule: { days: number; startDate?: string | null }): Promise<void>;
   getNearby(tripId: string): Promise<NearbyTown[]>;
   saveNearby(tripId: string, towns: NearbyTown[]): Promise<void>;
   getMeta(tripId: string): Promise<TripMeta | null>;
@@ -209,7 +221,8 @@ export interface AgentDeps {
   geocoder: MapsProvider;
   /** 국가코드별 지도 공급자 (KR → Naver) */
   mapsFor: (countryCode: string) => MapsProvider;
-  wiki: Pick<WikipediaKnowledge, "getCityKnowledge">;
+  /** 배경지식(위키백과·위키여행)과 관광청 대체 출처(위키여행 요약) */
+  wiki: Pick<WikipediaKnowledge, "getCityKnowledge" | "getSummary">;
   limits?: Partial<AgentLimits>;
   now?: () => Date;
 }

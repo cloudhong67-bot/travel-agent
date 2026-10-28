@@ -50,6 +50,8 @@ model Trip {
   /// 동명 도시 구분용으로 사용자가 고른 국가 (ISO 3166-1 alpha-2, 선택)
   countryCode  String?
   days         Int
+  /// true면 에이전트가 수집한 명소 규모로 추천 체류 일수를 정해 days를 바꾼다 (생성 시 "추천 일수로 자동")
+  autoDays     Boolean      @default(false)
   startDate    DateTime?
   style        String
   transport    String

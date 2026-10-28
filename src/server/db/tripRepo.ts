@@ -26,6 +26,7 @@ function toSummary(t: TripRow): TripSummary {
     countryCode: t.countryCode,
     cityId: t.cityId,
     days: t.days,
+    autoDays: t.autoDays,
     startDate: t.startDate?.toISOString() ?? null,
     style: t.style,
     transport: t.transport,
@@ -40,8 +41,22 @@ export type CreateTripResult =
   | { ok: true; trip: TripSummary }
   | { ok: false; reason: "DAILY_LIMIT_EXCEEDED"; usedToday: number; limit: number };
 
+export type ClaimResult = "ok" | "notFound" | "busy" | "failed";
+
 export function createTripRepo(db: () => Db) {
   const usage = createUsageRepo(db);
+
+  /** 완료(done) 상태인 여행만 running으로 바꿔 다시 작업하게 한다 (동시 요청은 한 번만 성공) */
+  const claimDone = async (id: string, message: string): Promise<ClaimResult> => {
+    const t = await db().trip.findUnique({ where: { id }, select: { status: true } });
+    if (!t) return "notFound";
+    if (t.status === "failed") return "failed";
+    const { count } = await db().trip.updateMany({
+      where: { id, status: "done" },
+      data: { status: "running", step: "assign", stepMessage: message, progress: 0, errorMessage: null },
+    });
+    return count ? "ok" : "busy";
+  };
 
   return {
     /**
@@ -65,6 +80,7 @@ export function createTripRepo(db: () => Db) {
               cityName: input.city,
               countryCode: input.countryCode ?? null,
               days: input.days,
+              autoDays: input.autoDays ?? false,
               startDate: input.startDate ? new Date(`${input.startDate}T00:00:00.000Z`) : null,
               style: input.style,
               transport: input.transport,
@@ -165,16 +181,28 @@ export function createTripRepo(db: () => Db) {
      * 일자 재생성 시작을 원자적으로 표시한다 (done → running).
      * 이미 작업 중이면 busy, 생성에 실패한 여행(일정 없음)이면 failed, 범위를 벗어난 일자면 badDay.
      */
-    async claimForRegeneration(id: string, dayIndex: number): Promise<"ok" | "notFound" | "busy" | "failed" | "badDay"> {
-      const t = await db().trip.findUnique({ where: { id }, select: { days: true, status: true } });
-      if (!t) return "notFound";
-      if (dayIndex >= t.days) return "badDay";
-      if (t.status === "failed") return "failed";
-      const { count } = await db().trip.updateMany({
-        where: { id, status: "done" },
-        data: { status: "running", step: "assign", stepMessage: `day ${dayIndex + 1} 재생성 대기`, progress: 0, errorMessage: null },
+    async claimForRegeneration(id: string, dayIndex: number): Promise<ClaimResult | "badDay"> {
+      const t = await db().trip.findUnique({ where: { id }, select: { days: true } });
+      if (t && dayIndex >= t.days) return "badDay";
+      return claimDone(id, `day ${dayIndex + 1} 재생성 대기`);
+    },
+
+    /** 일정 조정(일수·출발일 변경 후 전체 재작성) 시작을 원자적으로 표시한다. 조건은 재생성과 같다 */
+    async claimForReschedule(id: string, days: number): Promise<ClaimResult> {
+      return claimDone(id, `${days}일 일정으로 조정 대기`);
+    },
+
+    /** 여행 일수·출발일 변경. startDate를 생략하면 그대로 둔다 */
+    async updateSchedule(id: string, schedule: { days: number; startDate?: string | null }): Promise<void> {
+      await db().trip.updateMany({
+        where: { id },
+        data: {
+          days: schedule.days,
+          ...(schedule.startDate !== undefined
+            ? { startDate: schedule.startDate ? new Date(`${schedule.startDate}T00:00:00.000Z`) : null }
+            : {}),
+        },
       });
-      return count ? "ok" : "busy";
     },
 
     /** cutoff 이전부터 갱신이 없는 queued/running 작업을 failed로 정리 */

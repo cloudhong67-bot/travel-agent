@@ -8,7 +8,7 @@ import { getMapsProvider, GoogleMapsProvider } from "@/server/adapters/maps";
 import { GeminiGoogleSearch } from "@/server/adapters/search/geminiGoogleSearch";
 import { agentStore } from "@/server/db/agentStore";
 import { tripRepo } from "@/server/db";
-import { runDayRegeneration, runTripJob } from "./orchestrator";
+import { runDayRegeneration, runReschedule, runTripJob, type RescheduleInput } from "./orchestrator";
 import type { AgentDeps } from "./types";
 
 /** running/queued 상태로 이 시간 이상 갱신이 없으면 멈춘 작업으로 본다 */
@@ -37,6 +37,10 @@ export function startTripJob(tripId: string, deps: AgentDeps = getDefaultDeps())
 
 export function startDayRegeneration(tripId: string, dayIndex: number, deps: AgentDeps = getDefaultDeps()): void {
   void runDayRegeneration(tripId, dayIndex, deps).catch((e) => console.error(`[agent] trip ${tripId} day ${dayIndex} crashed`, e));
+}
+
+export function startReschedule(tripId: string, input: RescheduleInput, deps: AgentDeps = getDefaultDeps()): void {
+  void runReschedule(tripId, input, deps).catch((e) => console.error(`[agent] trip ${tripId} reschedule crashed`, e));
 }
 
 /**

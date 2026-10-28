@@ -60,7 +60,11 @@ export const CreateTripRequestSchema = z
       .transform((v) => v.toUpperCase())
       .optional()
       .meta({ description: "동명 도시 구분용 국가 코드", example: "PT" }),
-    days: z.number().int().min(1).max(14).meta({ example: 5 }),
+    days: z.number().int().min(1).max(14).meta({ example: 5, description: "autoDays가 true면 추천 일수를 정하지 못했을 때의 기본값" }),
+    autoDays: z
+      .boolean()
+      .optional()
+      .meta({ description: "true면 수집한 명소 규모로 추천 체류 일수를 산정해 그 일수로 일정을 만든다" }),
     startDate: z.iso.date().optional().meta({ example: "2027-05-01" }),
     style: z.string().trim().min(1).max(100).meta({ example: "역사,미식" }),
     transport: TransportSchema,
@@ -68,6 +72,21 @@ export const CreateTripRequestSchema = z
   })
   .meta({ id: "CreateTripRequest" });
 export type CreateTripRequest = z.infer<typeof CreateTripRequestSchema>;
+
+/** 완성된 여행의 일수·출발일을 바꾸고 일정 전체를 다시 만든다 (도시 정보는 재사용) */
+export const RescheduleTripRequestSchema = z
+  .strictObject({
+    days: z.number().int().min(1).max(14).meta({ example: 4 }),
+    startDate: z.iso.date().nullable().optional().meta({ description: "생략하면 기존 출발일 유지, null이면 날짜 미정", example: "2027-05-03" }),
+    request: z
+      .string()
+      .trim()
+      .max(300)
+      .optional()
+      .meta({ description: "일정에 반영할 요청 (예: 둘째 날은 해산물 시장 중심, 마지막 날은 오전만)", example: "둘째 날은 미술관 위주" }),
+  })
+  .meta({ id: "RescheduleTripRequest" });
+export type RescheduleTripRequest = z.infer<typeof RescheduleTripRequestSchema>;
 
 export const ListTripsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(20),
@@ -97,6 +116,7 @@ export const TripSummarySchema = z
     countryCode: z.string().nullable(),
     cityId: z.uuid().nullable(),
     days: z.number().int(),
+    autoDays: z.boolean().default(false).meta({ description: "추천 일수로 자동 결정한 여행인지" }),
     startDate: isoDateTime.nullable(),
     style: z.string(),
     transport: z.string(),
@@ -185,8 +205,18 @@ export const NearbyTownDetailSchema = z
   })
   .meta({ id: "NearbyTownDetail" });
 
+export const RecommendedStaySchema = z
+  .object({
+    days: z.number().int().meta({ example: 4 }),
+    nights: z.number().int().meta({ example: 3 }),
+    reason: z.string().meta({ example: "주요 명소·박물관 12곳(하루 4곳 기준 3일) + 근교 당일치기 1일" }),
+  })
+  .meta({ id: "RecommendedStay", description: "수집한 명소 규모로 산정한 추천 체류 일수 (코드 계산, LLM 미사용)" });
+export type RecommendedStay = z.infer<typeof RecommendedStaySchema>;
+
 export const TripMetaSchema = z
   .object({
+    recommendedStay: RecommendedStaySchema.nullable().default(null),
     base: PointSchema.nullable(),
     countryCode: z.string().nullable(),
     travelBasisNotice: z.string().nullable(),
@@ -201,6 +231,9 @@ export const TripMetaSchema = z
   .meta({ id: "TripMeta" });
 export type TripMetaView = z.infer<typeof TripMetaSchema>;
 
+export const BackgroundFieldSchema = z.enum(["history", "culture", "bestTime", "etiquette"]);
+export type BackgroundField = z.infer<typeof BackgroundFieldSchema>;
+
 export const CityBackgroundSchema = z
   .object({
     history: z.string().nullable(),
@@ -208,11 +241,19 @@ export const CityBackgroundSchema = z
     bestTime: z.string().nullable(),
     etiquette: z.string().nullable(),
     sources: z.array(WebSourceSchema),
+    aiFields: z
+      .array(BackgroundFieldSchema)
+      .default([])
+      .meta({ description: "출처 원문이 아니라 AI(Gemini) 일반 지식으로 채운 항목 — 화면에 'AI 요약 정보'로 표시" }),
   })
   .meta({ id: "CityBackground" });
 
 export const TourismInfoSchema = z
   .object({
+    sourceType: z
+      .enum(["official", "alternative"])
+      .default("official")
+      .meta({ description: "official: 공식 관광청 기준, alternative: 관광청 정보가 없어 위키여행·여행 플랫폼 등 대체 출처에서 수집" }),
     summary: z.string(),
     recommended: z.array(z.string()),
     festivals: z.array(z.string()),
@@ -291,6 +332,15 @@ export const ProgressEventSchema = z
   })
   .meta({ id: "ProgressEvent", description: "SSE `event: progress`의 data" });
 export type ProgressEvent = z.infer<typeof ProgressEventSchema>;
+
+export const RescheduleTripResponseSchema = z
+  .object({
+    tripId: z.uuid(),
+    days: z.number().int(),
+    status: TripStatusSchema,
+    eventsUrl: z.string(),
+  })
+  .meta({ id: "RescheduleTripResponse" });
 
 export const RegenerateDayResponseSchema = z
   .object({

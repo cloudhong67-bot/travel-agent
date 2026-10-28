@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { enforceAssignment, FALLBACK_STOPS_PER_DAY, fallbackAssignment } from "./assign";
 import { Budget, BudgetExceededError, estimateMatrixCalls, estimateRouteCalls } from "./budget";
-import { parseTourismAnswer } from "./prompts/tourism";
+import { needsAlternativeSources, parseTourismAnswer } from "./prompts/tourism";
 import { toGeminiSchema } from "./prompts/common";
 import { AssignmentSchema } from "./prompts/assignment";
 import type { AgentPoi, NearbyTown } from "./types";
@@ -124,5 +124,14 @@ describe("fallbackAssignment (LLM 실패 시 대체 배분)", () => {
 
     const sparse = fallbackAssignment({ dayIndexes: [0, 1, 2], pois: pois.slice(0, 2) });
     expect(sparse.days.get(2)).toMatchObject({ title: "자유 일정", stops: [] });
+  });
+});
+
+describe("needsAlternativeSources (관광청 정보 부족 판단)", () => {
+  const parsed = (officialSite: string | null, recommended: string[]) => ({ summary: "s", officialSite, recommended, festivals: [], transitPasses: [] });
+  it("공식 사이트가 없거나 추천 명소가 2곳 미만이면 대체 출처를 더 찾는다", () => {
+    expect(needsAlternativeSources(parsed("https://visit.example", ["A", "B"]))).toBe(false);
+    expect(needsAlternativeSources(parsed(null, ["A", "B", "C"]))).toBe(true);
+    expect(needsAlternativeSources(parsed("https://visit.example", ["A"]))).toBe(true);
   });
 });

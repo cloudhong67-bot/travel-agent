@@ -8,9 +8,11 @@ import {
   CityDetailSchema,
   CreateTripResponseSchema,
   RegenerateDayResponseSchema,
+  RescheduleTripResponseSchema,
   TripDetailSchema,
   TripListResponseSchema,
   type CreateTripRequest,
+  type RescheduleTripRequest,
 } from "./schemas";
 
 export class ApiClientError extends Error {
@@ -80,6 +82,8 @@ export const api = {
   getTrip: (id: string) => request(`/api/v1/trips/${id}`, TripDetailSchema),
   deleteTrip: (id: string) => request(`/api/v1/trips/${id}`, null, { method: "DELETE" }),
   getCity: (id: string) => request(`/api/v1/cities/${id}`, CityDetailSchema),
+  rescheduleTrip: (id: string, body: RescheduleTripRequest) =>
+    request(`/api/v1/trips/${id}/reschedule`, RescheduleTripResponseSchema, { method: "POST", body: JSON.stringify(body) }),
   regenerateDay: (id: string, dayIndex: number) =>
     request(`/api/v1/trips/${id}/days/${dayIndex}/regenerate`, RegenerateDayResponseSchema, { method: "POST" }),
 };

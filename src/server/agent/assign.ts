@@ -69,6 +69,8 @@ export async function assignDays(args: {
   pois: AgentPoi[];
   nearbyTowns: NearbyTown[];
   feedback?: string;
+  /** 일정 조정 때 사용자가 적은 요청 */
+  userRequest?: string;
 }): Promise<AssignResult> {
   const { trip, dayIndexes, pois, nearbyTowns } = args;
   const prompt = assignmentUserPrompt({
@@ -91,6 +93,7 @@ export async function assignDays(args: {
     })),
     nearbyTowns: nearbyTowns.filter((t) => t.kind === "dayTrip").map((t) => ({ name: t.name, travelMins: t.travelMins })),
     feedback: args.feedback,
+    userRequest: args.userRequest,
   });
 
   const assignment = await requestAssignment(args.llm, prompt);

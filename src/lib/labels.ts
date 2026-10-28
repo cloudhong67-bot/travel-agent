@@ -74,3 +74,8 @@ export function formatMinutes(mins: number): string {
   if (m < 60) return `${m}분`;
   return m % 60 === 0 ? `${m / 60}시간` : `${Math.floor(m / 60)}시간 ${m % 60}분`;
 }
+
+/** 여행 일수 → "3박 4일" (1일이면 "당일") */
+export function stayLabel(days: number): string {
+  return days > 1 ? `${days - 1}박 ${days}일` : "당일";
+}

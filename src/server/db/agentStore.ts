@@ -52,6 +52,20 @@ const kindLabel = (t: NearbyTown) => (t.kind === "dayTrip" ? "[당일치기]" : 
 /** 에이전트용 Prisma 저장소. TripDay.stops에는 DayPlan(경로선 제외)을 JSON으로, 근교 도시 좌표 등은 Trip.meta에 둔다 */
 export function createAgentStore(db: () => Db): AgentStore {
   const trips = createTripRepo(db);
+  /** 일자 저장: replaceAll이면 기존 일자를 모두, 아니면 같은 dayIndex만 지우고 넣는다 (한 트랜잭션) */
+  const writeDays = (tripId: string, days: DayPlan[], { replaceAll }: { replaceAll: boolean }) =>
+    db().$transaction(async (tx) => {
+      await tx.tripDay.deleteMany({ where: replaceAll ? { tripId } : { tripId, dayIndex: { in: days.map((d) => d.dayIndex) } } });
+      await tx.tripDay.createMany({
+        data: days.map(({ routeGeo, ...plan }) => ({
+          tripId,
+          dayIndex: plan.dayIndex,
+          title: plan.title.slice(0, 500),
+          stops: JSON.stringify(plan),
+          routeGeo: routeGeo ? JSON.stringify(routeGeo) : null,
+        })),
+      });
+    });
   const getMetaRaw = async (tripId: string) => {
     const t = await db().trip.findUnique({ where: { id: tripId }, select: { meta: true } });
     return (parseJsonColumn(t?.meta ?? null) as (TripMeta & { nearbyTowns?: NearbyTown[] }) | null) ?? null;
@@ -66,6 +80,7 @@ export function createAgentStore(db: () => Db): AgentStore {
         cityName: t.cityName,
         countryCode: t.countryCode,
         days: t.days,
+        autoDays: t.autoDays,
         startDate: t.startDate?.toISOString().slice(0, 10) ?? null,
         style: t.style,
         transport: t.transport as TripInput["transport"],
@@ -142,19 +157,14 @@ export function createAgentStore(db: () => Db): AgentStore {
     },
 
     async saveDays(tripId, days) {
-      await db().$transaction(async (tx) => {
-        await tx.tripDay.deleteMany({ where: { tripId, dayIndex: { in: days.map((d) => d.dayIndex) } } });
-        await tx.tripDay.createMany({
-          data: days.map(({ routeGeo, ...plan }) => ({
-            tripId,
-            dayIndex: plan.dayIndex,
-            title: plan.title.slice(0, 500),
-            stops: JSON.stringify(plan),
-            routeGeo: routeGeo ? JSON.stringify(routeGeo) : null,
-          })),
-        });
-      });
+      await writeDays(tripId, days, { replaceAll: false });
     },
+
+    async replaceDays(tripId, days) {
+      await writeDays(tripId, days, { replaceAll: true });
+    },
+
+    updateSchedule: (tripId, schedule) => trips.updateSchedule(tripId, schedule),
 
     async getNearby(tripId) {
       return (await getMetaRaw(tripId))?.nearbyTowns ?? [];

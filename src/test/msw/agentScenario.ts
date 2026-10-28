@@ -10,10 +10,20 @@ export interface ScenarioOptions {
   hallucinateKey?: boolean;
   /** Gemini 응답 지연(ms). E2E에서 진행 화면을 관찰·캡처하기 위함 */
   geminiDelayMs?: number;
+  /** 위키백과 문서가 없는 도시 (배경지식을 AI 일반 지식으로만 채우는 경우) */
+  noWiki?: boolean;
+  /**
+   * 관광청 검색 결과: official(기본) 공식 사이트·추천 명소 충분 / thin 공식 사이트 없음 → 대체 출처 검색 /
+   * fail 검색 실패 → 위키여행 요약으로 대체
+   */
+  tourism?: "official" | "thin" | "fail";
 }
 
 export interface ScenarioCounters {
   gemini: { history: number; search: number; candidates: number; selection: number; assignment: number; assignmentJson: number };
+  /** 마지막 일자 배분 요청의 프롬프트 (사용자 요청 반영 확인용) */
+  lastAssignmentPrompt: string;
+  wikivoyage: number;
   places: number;
   geocode: number;
   matrix: number;
@@ -34,6 +44,8 @@ const newCounters = (): ScenarioCounters => ({
   naverDirections15: 0,
   naverLocal: 0,
   wiki: 0,
+  lastAssignmentPrompt: "",
+  wikivoyage: 0,
 });
 
 // ---- 데이터 ----
@@ -151,6 +163,22 @@ export function agentHandlers(opts: ScenarioOptions = {}) {
 
       if (raw.includes('"googleSearch"')) {
         counters.gemini.search++;
+        if (opts.tourism === "fail") return HttpResponse.json({ error: { code: 503, message: "UNAVAILABLE" } }, { status: 503 });
+        const isAlternative = prompt.includes("공식 관광청 정보가 없거나 부족하다");
+        if (opts.tourism === "thin") {
+          return geminiText(
+            isAlternative
+              ? ["요약: 위키여행 기준 포르투는 강변 구시가지와 와인 저장고로 알려진 도시다.", "공식사이트: 정보 없음", "추천명소: Ribeira; Livraria Lello; Torre dos Clérigos", "축제: 정보 없음", "교통패스: 정보 없음"].join("\n")
+              : ["요약: 짧은 소개.", "공식사이트: 정보 없음", "추천명소: Torre dos Clérigos", "축제: 정보 없음", "교통패스: 정보 없음"].join("\n"),
+            {
+              groundingMetadata: {
+                webSearchQueries: [isAlternative ? "포르투 위키여행" : "포르투 관광청"],
+                groundingChunks: [{ web: { uri: isAlternative ? "https://en.wikivoyage.org/wiki/Porto" : "https://someblog.example/porto", title: isAlternative ? "wikivoyage.org" : "someblog.example" } }],
+                searchEntryPoint: { renderedContent: isAlternative ? "<div>alt</div>" : "<div>first</div>" },
+              },
+            },
+          );
+        }
         return geminiText(
           [
             "요약: 포르투는 도루강 하구의 항구 도시로 역사 지구가 유네스코 세계유산이다.",
@@ -173,6 +201,7 @@ export function agentHandlers(opts: ScenarioOptions = {}) {
       }
       if (raw.includes('"functionDeclarations"')) {
         counters.gemini.assignment++;
+        counters.lastAssignmentPrompt = prompt;
         const args = buildAssignment(prompt, opts, counters.gemini.assignment === 1);
         return HttpResponse.json({
           candidates: [{ content: { role: "model", parts: [{ functionCall: { name: "submitItinerary", args } }] }, finishReason: "STOP" }],
@@ -181,7 +210,16 @@ export function agentHandlers(opts: ScenarioOptions = {}) {
       }
       if (raw.includes('"history"')) {
         counters.gemini.history++;
-        return geminiText(JSON.stringify({ history: "포르투는 로마 시대부터 이어진 항구 도시다.", culture: "포트와인으로 유명하다.", bestTime: null, etiquette: null }));
+        // 원문에 없는 기후·매너는 일반 지식으로 채우고 aiFields로 표시한다 (history@v2)
+        return geminiText(
+          JSON.stringify({
+            history: "포르투는 로마 시대부터 이어진 항구 도시다.",
+            culture: "포트와인으로 유명하다.",
+            bestTime: "여름은 건조하고 겨울은 비가 잦아 봄·초가을이 걷기 좋다.",
+            etiquette: "성당 안에서는 조용히 하고 어깨를 가리는 옷을 입는다.",
+            aiFields: ["bestTime", "etiquette"],
+          }),
+        );
       }
       if (raw.includes('"towns"')) {
         counters.gemini.candidates++;
@@ -293,8 +331,20 @@ export function agentHandlers(opts: ScenarioOptions = {}) {
     }),
 
     // Wikipedia (기본 핸들러를 덮어써 호출 수를 센다)
+    http.get("https://:lang.wikivoyage.org/api/rest_v1/page/summary/:title", ({ params }) => {
+      counters.wikivoyage++;
+      if (opts.noWiki || opts.tourism !== "fail") return new HttpResponse(null, { status: 404 });
+      return HttpResponse.json({
+        type: "standard",
+        title: decodeURIComponent(String(params.title)),
+        extract: "포르투는 포르투갈 북부의 항구 도시로, 리베이라 지구와 와인 저장고가 볼거리다.",
+        content_urls: { desktop: { page: `https://${params.lang}.wikivoyage.org/wiki/${params.title}` } },
+      });
+    }),
+
     http.get("https://:lang.wikipedia.org/api/rest_v1/page/summary/:title", ({ params }) => {
       counters.wiki++;
+      if (opts.noWiki) return new HttpResponse(null, { status: 404 });
       return HttpResponse.json({
         type: "standard",
         title: decodeURIComponent(String(params.title)),

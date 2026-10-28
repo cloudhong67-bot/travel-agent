@@ -37,6 +37,7 @@ const MAX_PROGRESS_FAILURES = 3;
 function newMeta(): TripMeta {
   return {
     version: 1,
+    recommendedStay: null,
     base: null,
     countryCode: null,
     travelBasisNotice: null,
@@ -139,10 +140,14 @@ export class AgentJob {
     this.closeStep();
   }
 
-  /** 정상 완료 */
-  async complete(plans: Map<number, DayPlan>, opts: { saveDays: DayPlan[]; nearby?: NearbyTown[]; message: string }): Promise<void> {
+  /**
+   * 정상 완료
+   * @param replace true면 기존 일자를 모두 지우고 saveDays로 바꾼다 (일정 조정으로 일수가 줄어든 경우)
+   */
+  async complete(plans: Map<number, DayPlan>, opts: { saveDays: DayPlan[]; nearby?: NearbyTown[]; message: string; replace?: boolean }): Promise<void> {
     this.finalize(plans);
-    await this.store.saveDays(this.tripId, opts.saveDays);
+    if (opts.replace) await this.store.replaceDays(this.tripId, opts.saveDays);
+    else await this.store.saveDays(this.tripId, opts.saveDays);
     if (opts.nearby) await this.store.saveNearby(this.tripId, opts.nearby);
     await this.store.finish(this.tripId, { status: "done", meta: this.meta, errorMessage: null, message: opts.message });
   }

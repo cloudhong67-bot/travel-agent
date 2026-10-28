@@ -1,3 +1,4 @@
+import { unstable_rethrow } from "next/navigation";
 import type { z } from "zod";
 import type { ApiError } from "@/lib/schemas";
 
@@ -59,6 +60,8 @@ export function withErrorHandling<A extends unknown[]>(handler: (...args: A) => 
     try {
       return await handler(...args);
     } catch (error) {
+      // Next.js 내부 신호(빌드 시 프리렌더 중단·동적 사용 감지 등)는 오류가 아니므로 삼키지 않고 Next로 돌려준다
+      unstable_rethrow(error);
       if (error instanceof ApiProblem) return apiError(error.status, error.code, error.message);
       console.error("[api] unhandled error", error);
       return apiError(500, "INTERNAL_ERROR", "서버 오류가 발생했습니다.");

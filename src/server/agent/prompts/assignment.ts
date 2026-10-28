@@ -1,11 +1,11 @@
-// prompts/assignment.ts — version: v2 (2026-10-27) — v2: 예산 수준 반영
+// prompts/assignment.ts — version: v3 (2026-10-28) — v2: 예산 수준 반영, v3: 사용자 요청(일정 조정) 반영
 // 일자 배분: Gemini(thinking medium) 함수 호출 submitItinerary. 인자는 Zod 스키마(AssignmentSchema)로 강제·검증.
 // "주어진 POI 키만 사용" 규칙은 이 프롬프트와 assign.ts의 검증 양쪽에 있다.
 
 import { z } from "zod";
 import { FACT_RULES, toGeminiSchema } from "./common";
 
-export const ASSIGNMENT_PROMPT_VERSION = "assignment@v2";
+export const ASSIGNMENT_PROMPT_VERSION = "assignment@v3";
 
 const BUDGET_LABEL = { low: "알뜰 (무료·저렴한 명소와 현지 식당 위주)", medium: "보통", high: "여유 (유료 명소·평점 높은 식당 우선)" } as const;
 export const ASSIGNMENT_TOOL_NAME = "submitItinerary";
@@ -68,6 +68,8 @@ export function assignmentUserPrompt(input: {
   nearbyTowns: { name: string; travelMins: number }[];
   /** 재시도·재생성 시 해당 일자만 다시 짤 때의 피드백 */
   feedback?: string;
+  /** 사용자가 일정 조정 때 적은 요청 (예: 둘째 날은 미술관 위주) */
+  userRequest?: string;
 }): string {
   const dayLines = input.days
     .map((d) => `- day ${d.dayIndex}${d.date ? `: ${d.date} (${d.weekday}요일)` : " (날짜 미정)"}`)
@@ -94,6 +96,6 @@ ${poiLines}
 
 근교 도시:
 ${towns}
-${input.feedback ? `\n이전 배분의 문제점 — 반드시 고쳐라:\n${input.feedback}\n` : ""}
+${input.feedback ? `\n이전 배분의 문제점 — 반드시 고쳐라:\n${input.feedback}\n` : ""}${input.userRequest ? `\n사용자 요청 — 가능한 한 반영하라 (위 규칙·주어진 POI 키 제한과 충돌하면 규칙이 우선):\n${input.userRequest}\n` : ""}
 위 일자에 대해서만 배분해 ${ASSIGNMENT_TOOL_NAME}로 제출하라.`;
 }

@@ -9,7 +9,7 @@ import { summarizeHours } from "@/lib/hours";
 import { POI_CATEGORY_LABEL } from "@/lib/labels";
 import type { CityDetail } from "@/lib/schemas";
 import { hostnameOf, safeExternalUrl } from "@/lib/url";
-import { SourceLink } from "./common";
+import { Notice, SourceLink } from "./common";
 
 const FILTERS = ["all", "sight", "museum", "food"] as const;
 type Filter = (typeof FILTERS)[number];
@@ -60,10 +60,13 @@ export function TourismTab({ city }: { city: CityDetail }) {
     <div className="space-y-6">
       <section className="space-y-3" aria-labelledby="tourism-heading">
         <h2 id="tourism-heading" className="text-base font-semibold">
-          관광청 정보
+          {t?.sourceType === "alternative" ? "여행 정보" : "관광청 정보"}
         </h2>
         {t ? (
           <>
+            {t.sourceType === "alternative" && (
+              <Notice>공식 관광청 정보를 찾지 못해 위키여행·지자체·여행 정보 플랫폼 등 대체 출처에서 모은 정보입니다.</Notice>
+            )}
             <p className="text-sm leading-relaxed">{t.summary}</p>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {t.sources.filter((s) => safeExternalUrl(s.url)).map((s) => (
@@ -107,7 +110,7 @@ export function TourismTab({ city }: { city: CityDetail }) {
             )}
           </>
         ) : (
-          <p className="text-sm text-muted-foreground">관광청 정보를 수집하지 못했습니다.</p>
+          <p className="text-sm text-muted-foreground">관광청과 대체 출처(위키여행 등) 모두에서 여행 정보를 찾지 못했습니다.</p>
         )}
       </section>
 

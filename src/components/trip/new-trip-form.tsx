@@ -3,11 +3,12 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Loader2Icon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { Controller, useForm } from "react-hook-form";
+import { Controller, useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldLegend, FieldSet } from "@/components/ui/field";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -35,7 +36,7 @@ export function NewTripForm() {
   const router = useRouter();
   const form = useForm<TripFormValues>({
     resolver: zodResolver(TripFormSchema),
-    defaultValues: { city: "", countryCode: AUTO, days: 3, startDate: "", styles: ["역사"], transport: "transit", budget: "medium" },
+    defaultValues: { city: "", countryCode: AUTO, days: 3, autoDays: false, startDate: "", styles: ["역사"], transport: "transit", budget: "medium" },
   });
 
   async function onSubmit(values: TripFormValues) {
@@ -43,6 +44,7 @@ export function NewTripForm() {
       city: values.city,
       countryCode: values.countryCode === AUTO ? undefined : values.countryCode,
       days: values.days,
+      autoDays: values.autoDays || undefined,
       startDate: values.startDate || undefined,
       style: values.styles.join(","),
       transport: values.transport,
@@ -57,6 +59,7 @@ export function NewTripForm() {
   }
 
   const submitting = form.formState.isSubmitting;
+  const autoDays = useWatch({ control: form.control, name: "autoDays" });
 
   return (
     <form onSubmit={form.handleSubmit(onSubmit)} noValidate className="space-y-6">
@@ -112,14 +115,27 @@ export function NewTripForm() {
                   min={1}
                   max={14}
                   aria-invalid={fieldState.invalid}
+                  disabled={autoDays}
                   value={Number.isNaN(field.value) ? "" : field.value}
                   onChange={(e) => field.onChange(e.target.valueAsNumber)}
                   onBlur={field.onBlur}
                   name={field.name}
                   ref={field.ref}
                 />
-                <FieldDescription>1~14일</FieldDescription>
+                <FieldDescription>{autoDays ? "명소 규모로 추천 일수를 정합니다 (정하지 못하면 이 값)" : "1~14일"}</FieldDescription>
                 {fieldState.error && <FieldError errors={[{ message: "1~14 사이의 숫자를 입력하세요" }]} />}
+                <Controller
+                  name="autoDays"
+                  control={form.control}
+                  render={({ field: auto }) => (
+                    <Field orientation="horizontal" className="w-auto">
+                      <Checkbox id="autoDays" checked={auto.value ?? false} onCheckedChange={(checked) => auto.onChange(checked === true)} />
+                      <FieldLabel htmlFor="autoDays" className="font-normal">
+                        잘 모르겠어요 — 추천 일수로 자동 결정
+                      </FieldLabel>
+                    </Field>
+                  )}
+                />
               </Field>
             )}
           />

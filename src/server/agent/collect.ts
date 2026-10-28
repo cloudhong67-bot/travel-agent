@@ -1,6 +1,7 @@
 /**
  * PRD 7장 3단계 "병렬 수집"의 개별 작업. 각 함수는 독립적으로 실패할 수 있고, 오케스트레이터가 allSettled로 묶는다.
  */
+import type { BackgroundField } from "@/lib/schemas";
 import { hostnameOf } from "@/lib/url";
 import { haversineM } from "@/server/adapters/maps/naver";
 import type { LlmProvider } from "@/server/adapters/llm/types";
@@ -18,7 +19,8 @@ import {
   nearbySelectPrompt,
   nearbySelectionResponseSchema,
 } from "./prompts/nearby";
-import { parseTourismAnswer, tourismQuery } from "./prompts/tourism";
+import { alternativeTourismQuery, needsAlternativeSources, parseTourismAnswer, tourismQuery } from "./prompts/tourism";
+import { BudgetExceededError } from "./budget";
 
 /** LLM의 JSON 텍스트 응답을 Zod로 검증 (코드펜스가 붙어 와도 처리) */
 export function parseJsonOutput<T>(text: string, schema: { parse: (v: unknown) => T }): T {
@@ -28,16 +30,25 @@ export function parseJsonOutput<T>(text: string, schema: { parse: (v: unknown) =
 
 // ---------- 역사·배경 ----------
 
+const BACKGROUND_FIELDS: BackgroundField[] = ["history", "culture", "bestTime", "etiquette"];
+
+/**
+ * 역사·문화·기후·매너 요약. 위키 원문을 우선 근거로 쓰고, 원문에 없는 항목(또는 원문 자체가 없을 때)은
+ * Gemini의 일반 지식으로 채워 aiFields에 표시한다 — 화면에서 "AI 요약 정보"로 구분된다.
+ */
 export async function collectHistory(
   llm: LlmProvider,
   wiki: AgentDeps["wiki"],
   cityName: string,
   englishName?: string,
 ): Promise<CityBackground> {
-  const knowledge = await wiki.getCityKnowledge(cityName, englishName);
+  // 위키 조회가 실패해도(네트워크·차단) 일반 지식 요약으로 계속한다
+  const knowledge = await wiki.getCityKnowledge(cityName, englishName).catch((e) => {
+    console.warn(`[agent] 위키 원문 조회 실패 — 일반 지식으로 요약합니다 (${cityName})`, e);
+    return { wikipedia: null, wikivoyage: null };
+  });
   const docs = [knowledge.wikipedia, knowledge.wikivoyage].filter((d) => d !== null);
   const sources = docs.map((d) => ({ title: `${d.site === "wikipedia" ? "위키백과" : "위키여행"}: ${d.title}`, url: d.url }));
-  if (docs.length === 0) return { history: null, culture: null, bestTime: null, etiquette: null, sources: [] };
 
   const res = await llm.generate({
     systemInstruction: HISTORY_SYSTEM,
@@ -46,33 +57,93 @@ export async function collectHistory(
     responseJsonSchema: historyResponseSchema,
     temperature: 0.2,
   });
-  return { ...parseJsonOutput(res.text, HistorySummarySchema), sources };
+  const { aiFields: reported, ...fields } = parseJsonOutput(res.text, HistorySummarySchema);
+  const filled = BACKGROUND_FIELDS.filter((f) => fields[f]);
+  // 원문이 없으면 채운 항목은 모두 AI 지식이다. 모델이 aiFields를 빠뜨려도 출처 기반처럼 보이지 않게 코드가 정한다
+  const aiFields = docs.length === 0 ? filled : filled.filter((f) => reported.includes(f));
+  return { ...fields, sources, aiFields };
 }
 
 // ---------- 관광청 ----------
 
+type SearchAnswer = Awaited<ReturnType<SearchProvider["search"]>>;
+
+/** 검색 1회 결과 → 해석 + 출처 (모델이 답한 사이트는 같은 도메인 출처가 없을 때만 추가: 경로만 다른 중복 카드 방지) */
+function readAnswer(res: SearchAnswer, siteTitle: string) {
+  const parsed = parseTourismAnswer(res.summary);
+  const sources = [...res.sources];
+  const siteHost = parsed.officialSite ? hostnameOf(parsed.officialSite) : null;
+  if (parsed.officialSite && siteHost && !sources.some((s) => hostnameOf(s.url) === siteHost)) {
+    sources.push({ title: siteTitle, url: parsed.officialSite });
+  }
+  return { parsed, sources, res };
+}
+
+const uniqueBy = <T>(items: T[], key: (t: T) => string) => {
+  const seen = new Set<string>();
+  return items.filter((t) => (seen.has(key(t)) ? false : (seen.add(key(t)), true)));
+};
+
+/**
+ * 관광청 정보. 정보원 우선순위:
+ *   1) 공식 관광청 (검색 그라운딩)
+ *   2) 1)에 공식 사이트가 없거나 추천 명소가 부족하면 대체 출처(위키여행·지자체·여행 플랫폼) 검색을 더해 병합
+ *   3) 검색이 모두 실패하면 위키여행 요약으로 최소 정보를 만든다
+ * 비용 상한 초과는 대체하지 않고 그대로 던진다 (부분 저장 흐름).
+ */
 export async function collectTourism(
   search: SearchProvider,
+  wiki: AgentDeps["wiki"],
   countryName: string,
   cityName: string,
   countryCode: string,
 ): Promise<TourismInfo> {
-  const res = await search.search(tourismQuery(countryName, cityName), { countryCode });
-  const parsed = parseTourismAnswer(res.summary);
-  const sources = [...res.sources];
-  // 모델이 답한 공식 사이트는 검색 출처에 같은 도메인이 없을 때만 추가한다 (경로만 다른 중복 카드 방지)
-  const officialHost = parsed.officialSite ? hostnameOf(parsed.officialSite) : null;
-  if (parsed.officialSite && officialHost && !sources.some((s) => hostnameOf(s.url) === officialHost)) {
-    sources.push({ title: "공식 관광청", url: parsed.officialSite });
-  }
+  const attempt = async (query: string, siteTitle: string) => {
+    try {
+      return readAnswer(await search.search(query, { countryCode }), siteTitle);
+    } catch (error) {
+      if (error instanceof BudgetExceededError) throw error;
+      console.warn(`[agent] 관광 정보 검색 실패 (${cityName})`, error);
+      return null;
+    }
+  };
+
+  const official = await attempt(tourismQuery(countryName, cityName), "공식 관광청");
+  const alternative =
+    !official || needsAlternativeSources(official.parsed) ? await attempt(alternativeTourismQuery(countryName, cityName), "대표 여행 정보") : null;
+  const answers = [official, alternative].filter((a) => a !== null);
+  if (answers.length === 0 || answers.every((a) => !a.parsed.summary)) return wikivoyageTourism(wiki, cityName);
+
+  const isOfficial = Boolean(official?.parsed.officialSite);
+  // 요약은 공식 관광청 답이 있으면 그것을, 아니면 대체 출처 답을 쓴다. 목록 항목은 합친다
+  const lead = isOfficial ? official! : (alternative ?? official!);
+  const all = <K extends "recommended" | "festivals" | "transitPasses">(k: K) => uniqueBy(answers.flatMap((a) => a.parsed[k]), normalizeName);
   return {
-    summary: parsed.summary,
-    recommended: parsed.recommended,
-    festivals: parsed.festivals,
-    transitPasses: parsed.transitPasses,
-    sources: rankSources(sources),
-    searchQueries: res.searchQueries ?? [],
-    searchEntryPointHtml: res.searchEntryPointHtml ?? null,
+    sourceType: isOfficial ? "official" : "alternative",
+    summary: lead.parsed.summary,
+    recommended: all("recommended").slice(0, 8),
+    festivals: all("festivals"),
+    transitPasses: all("transitPasses"),
+    sources: rankSources(uniqueBy(answers.flatMap((a) => a.sources), (s) => s.url)),
+    searchQueries: [...new Set(answers.flatMap((a) => a.res.searchQueries ?? []))],
+    // 검색 결과를 보여주므로 검색마다 받은 검색 추천을 모두 함께 표시한다 (Gemini API 약관)
+    searchEntryPointHtml: answers.map((a) => a.res.searchEntryPointHtml).filter(Boolean).join("\n") || null,
+  };
+}
+
+/** 검색이 모두 실패했을 때의 최소 정보: 위키여행 도시 문서 요약 (없으면 실패) */
+async function wikivoyageTourism(wiki: AgentDeps["wiki"], cityName: string): Promise<TourismInfo> {
+  const doc = await wiki.getSummary("wikivoyage", cityName);
+  if (!doc) throw new Error(`관광 정보를 찾지 못했습니다 (검색·위키여행 모두 없음): ${cityName}`);
+  return {
+    sourceType: "alternative",
+    summary: doc.extract.length > 600 ? `${doc.extract.slice(0, 600)}…` : doc.extract,
+    recommended: [],
+    festivals: [],
+    transitPasses: [],
+    sources: rankSources([{ title: `위키여행: ${doc.title}`, url: doc.url }]),
+    searchQueries: [],
+    searchEntryPointHtml: null,
   };
 }
 

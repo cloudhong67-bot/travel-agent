@@ -8,7 +8,7 @@ import { createTestDeps } from "@/test/agentDeps";
 import { resetDb } from "@/test/integration/db";
 import { agentHandlers } from "@/test/msw/agentScenario";
 import { server } from "@/test/msw/server";
-import { runDayRegeneration, runTripJob } from "./orchestrator";
+import { runDayRegeneration, runReschedule, runTripJob } from "./orchestrator";
 
 const dbUrl = inject("dbUrl");
 
@@ -59,6 +59,26 @@ describe.skipIf(!dbUrl)("에이전트 + SQL Server", () => {
     expect(after[0].stops).toBe(before[0].stops);
     expect(after[1].stops).toBe(before[1].stops);
     expect((await trips.getProgress(created.trip.id))?.status).toBe("done");
+  });
+
+  it("추천 체류 일수가 상세 API에 나오고, 일정 조정은 일수·일자를 통째로 바꾼다", async () => {
+    const trips = createTripRepo(() => db);
+    const created = await trips.createWithDailyLimit(porto, { limit: 10 });
+    if (!created.ok) throw new Error("limit");
+    const id = created.trip.id;
+    const deps = createTestDeps(createAgentStore(() => db));
+    await runTripJob(id, deps);
+    const detail = (await trips.getDetail(id))!;
+    expect(detail.meta?.recommendedStay).toMatchObject({ days: expect.any(Number), reason: expect.any(String) });
+
+    expect(await trips.claimForReschedule(id, 2)).toBe("ok");
+    await runReschedule(id, { days: 2, startDate: "2027-06-01" }, deps);
+
+    const after = (await trips.getDetail(id))!;
+    expect(after).toMatchObject({ status: "done", days: 2, startDate: "2027-06-01T00:00:00.000Z", errorMessage: null });
+    expect(after.itinerary.map((d) => d.dayIndex)).toEqual([0, 1]);
+    expect(await db.tripDay.count({ where: { tripId: id } })).toBe(2); // 3일차 행은 지워진다
+    expect(after.itinerary[0].stops.date).toBe("2027-06-01");
   });
 
   it("10분 넘게 멈춘 running 작업을 failed로 정리한다", async () => {

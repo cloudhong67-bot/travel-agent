@@ -24,6 +24,13 @@ test("토큰 입력 → 여행 생성 → 결과 탭 확인", async ({ page }) =
   // 배경지식
   await expect(page.getByText("포르투는 로마 시대부터 이어진 항구 도시다.")).toBeVisible();
   await expect(page.getByRole("link", { name: /위키백과/ }).first()).toBeVisible();
+  // 원문에 없던 기후·매너는 비우지 않고 AI 요약 정보로 표시 (출처 링크 대신 참고 안내)
+  await expect(page.getByTestId("background-bestTime").getByText("AI 요약 정보")).toBeVisible();
+  await expect(page.getByTestId("background-bestTime").getByRole("link")).toHaveCount(0);
+  await expect(page.getByTestId("background-history").getByText("AI 요약 정보")).toHaveCount(0);
+
+  // 추천 체류 일수
+  await expect(page.getByTestId("recommended-stay")).toHaveText(/\d박 \d일/);
 
   // 관광청·명소 (공식 출처 카드 + 카테고리 필터)
   await page.getByRole("tab", { name: "관광청·명소" }).click();
@@ -44,6 +51,18 @@ test("토큰 입력 → 여행 생성 → 결과 탭 확인", async ({ page }) =
   await page.getByRole("tab", { name: "근교 소도시" }).click();
   await expect(page.getByTestId("nearby-list").getByRole("listitem").filter({ hasText: "브라가" })).toBeVisible();
   await expect(page.getByText("당일치기").first()).toBeVisible();
+
+  // 일정 조정: 3일로 늘리고 요청을 적으면 진행 화면을 거쳐 3일 일정으로 바뀐다
+  await page.getByTestId("schedule-panel").getByRole("button", { name: "일정 조정" }).click();
+  const panel = page.getByTestId("schedule-panel");
+  await panel.getByLabel("여행 일수").fill("3");
+  await panel.getByLabel("일정 요청 (선택)").fill("둘째 날은 미술관 위주");
+  await page.getByRole("button", { name: "이 조건으로 다시 만들기" }).click();
+  await expect(page.getByTestId("trip-progress").getByText("2박 3일 일정으로 조정하는 중", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("trip-result")).toBeVisible({ timeout: 90_000 });
+  await page.getByRole("tab", { name: "일정·동선" }).click();
+  await expect(page.getByRole("group", { name: "일자 선택" }).getByRole("button", { name: /3일차/ })).toBeVisible();
+  await expect(page.getByText(/^2박 3일 ·/)).toBeVisible();
 
   // 목록에 나타난다
   await page.getByRole("link", { name: "내 여행" }).click();

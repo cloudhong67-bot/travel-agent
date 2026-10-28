@@ -12,6 +12,7 @@ describe("OpenAPI 문서", () => {
         "/api/v1/trips",
         "/api/v1/trips/{id}",
         "/api/v1/trips/{id}/days/{dayIndex}/regenerate",
+        "/api/v1/trips/{id}/reschedule",
         "/api/v1/trips/{id}/events",
       ].sort(),
     );

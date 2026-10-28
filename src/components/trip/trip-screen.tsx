@@ -17,7 +17,8 @@ import { TripResult } from "./trip-result";
 export function TripScreen({ id }: { id: string }) {
   const [trip, setTrip] = useState<TripDetail | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [regeneratingDay, setRegeneratingDay] = useState<number | null>(null);
+  /** 일자 재생성·일정 조정 중이면 진행 화면 제목 */
+  const [reworkTitle, setReworkTitle] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
@@ -41,7 +42,7 @@ export function TripScreen({ id }: { id: string }) {
 
   const load = useCallback(() => setReloadKey((k) => k + 1), []);
   const onFinished = useCallback(() => {
-    setRegeneratingDay(null);
+    setReworkTitle(null);
     load();
   }, [load]);
 
@@ -64,17 +65,17 @@ export function TripScreen({ id }: { id: string }) {
   if (!trip) return <TripSkeleton />;
 
   if (trip.status === "queued" || trip.status === "running") {
-    const title = regeneratingDay !== null ? `${regeneratingDay + 1}일차를 다시 만드는 중` : `${trip.cityName} 일정을 만드는 중`;
-    return <TripProgress key={`${trip.id}-${regeneratingDay}`} trip={trip} title={title} onFinished={onFinished} />;
+    const title = reworkTitle ?? `${trip.cityName} 일정을 만드는 중`;
+    return <TripProgress key={`${trip.id}-${reworkTitle}`} trip={trip} title={title} onFinished={onFinished} />;
   }
   if (trip.status === "failed") return <TripFailed trip={trip} />;
 
   return (
     <TripResult
       trip={trip}
-      onRegenerating={(day) => {
-        setRegeneratingDay(day);
-        setTrip({ ...trip, status: "running", step: "assign", stepMessage: `${day + 1}일차 재생성 대기`, progress: 0 });
+      onRework={(title) => {
+        setReworkTitle(title);
+        setTrip({ ...trip, status: "running", step: "assign", stepMessage: `${title} (대기)`, progress: 0 });
       }}
     />
   );

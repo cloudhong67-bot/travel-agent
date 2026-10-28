@@ -76,6 +76,24 @@ describe.skipIf(!dbUrl)("Repository (SQL Server)", () => {
     expect(await trips.claimForRegeneration("00000000-0000-0000-0000-000000000000", 0)).toBe("notFound");
   });
 
+  it("일정 조정: 선점 조건·일수/출발일 변경·추천 일수 자동 플래그", async () => {
+    const created = await trips.createWithDailyLimit({ ...input, autoDays: true }, { limit: 10 });
+    if (!created.ok) throw new Error("create failed");
+    const id = created.trip.id;
+    expect(created.trip.autoDays).toBe(true);
+
+    expect(await trips.claimForReschedule(id, 4)).toBe("busy"); // queued
+    await trips.updateProgress(id, { status: "done", progress: 100 });
+    expect(await trips.claimForReschedule(id, 4)).toBe("ok");
+    expect(await trips.getProgress(id)).toMatchObject({ status: "running", message: "4일 일정으로 조정 대기" });
+
+    await trips.updateSchedule(id, { days: 4 }); // 출발일 생략 → 유지
+    expect(await trips.getDetail(id)).toMatchObject({ days: 4, startDate: "2027-05-01T00:00:00.000Z" });
+    await trips.updateSchedule(id, { days: 2, startDate: null });
+    expect(await trips.getDetail(id)).toMatchObject({ days: 2, startDate: null });
+    expect(await trips.claimForReschedule("00000000-0000-0000-0000-000000000000", 3)).toBe("notFound");
+  });
+
   it("하루 한도: 서울 날짜 기준, 삭제해도 사용량은 남는다", async () => {
     const day1 = new Date("2026-10-27T03:00:00Z"); // 서울 12:00
     for (let i = 0; i < 2; i++) expect((await trips.createWithDailyLimit(input, { limit: 2, now: day1 })).ok).toBe(true);

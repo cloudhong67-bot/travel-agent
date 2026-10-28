@@ -6,15 +6,17 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api, errorMessage } from "@/lib/api-client";
-import { BUDGET_LABEL, formatDate, TRANSPORT_LABEL } from "@/lib/labels";
+import { BUDGET_LABEL, formatDate, stayLabel, TRANSPORT_LABEL } from "@/lib/labels";
 import type { CityDetail, TripDetail } from "@/lib/schemas";
 import { BackgroundTab } from "./background-tab";
 import { Notice, ReviewBadge } from "./common";
 import { ItineraryTab } from "./itinerary-tab";
 import { NearbyTab } from "./nearby-tab";
+import { SchedulePanel } from "./schedule-panel";
 import { TourismTab } from "./tourism-tab";
 
-export function TripResult({ trip, onRegenerating }: { trip: TripDetail; onRegenerating: (dayIndex: number) => void }) {
+/** @param onRework 일자 재생성·일정 조정을 시작했을 때 진행 화면 제목과 함께 알린다 */
+export function TripResult({ trip, onRework }: { trip: TripDetail; onRework: (title: string) => void }) {
   const [city, setCity] = useState<CityDetail | null>(null);
   const cityId = trip.city?.id ?? trip.cityId;
 
@@ -35,10 +37,21 @@ export function TripResult({ trip, onRegenerating }: { trip: TripDetail; onRegen
           {reviewCount > 0 && <ReviewBadge>검증 필요 {reviewCount}일</ReviewBadge>}
         </div>
         <p className="text-sm text-muted-foreground">
-          {trip.days}일 · {formatDate(trip.createdAt)} 생성 · {TRANSPORT_LABEL[trip.transport] ?? trip.transport}
+          {stayLabel(trip.days)}{trip.autoDays ? " (추천 일수)" : ""} · {formatDate(trip.createdAt)} 생성 · {TRANSPORT_LABEL[trip.transport] ?? trip.transport}
           {trip.budget ? ` · 예산 ${BUDGET_LABEL[trip.budget]}` : ""} · {trip.style.split(",").join("·")}
         </p>
+        <SchedulePanel trip={trip} onRescheduling={onRework} />
         {meta?.travelBasisNotice && <Notice tone="warn">{meta.travelBasisNotice}</Notice>}
+        {meta && meta.notices.length > 0 && (
+          <details className="text-xs text-muted-foreground">
+            <summary className="cursor-pointer select-none">안내 {meta.notices.length}건</summary>
+            <ul className="mt-2 list-disc space-y-1 pl-5">
+              {meta.notices.map((n) => (
+                <li key={n}>{n}</li>
+              ))}
+            </ul>
+          </details>
+        )}
         {meta?.partial && <Notice tone="warn">{trip.errorMessage ?? "비용 상한에 도달해 일부 결과만 저장되었습니다."}</Notice>}
         {!meta?.partial && trip.errorMessage && <Notice tone="warn">{trip.errorMessage}</Notice>}
         {meta && meta.warnings.length > 0 && (
@@ -72,7 +85,7 @@ export function TripResult({ trip, onRegenerating }: { trip: TripDetail; onRegen
         <TabsContent value="background">{city ? <BackgroundTab city={city} /> : <TabSkeleton />}</TabsContent>
         <TabsContent value="tourism">{city ? <TourismTab city={city} /> : <TabSkeleton />}</TabsContent>
         <TabsContent value="itinerary">
-          <ItineraryTab trip={trip} onRegenerating={onRegenerating} />
+          <ItineraryTab trip={trip} onRegenerating={(day) => onRework(`${day + 1}일차를 다시 만드는 중`)} />
         </TabsContent>
         <TabsContent value="nearby">
           <NearbyTab trip={trip} />

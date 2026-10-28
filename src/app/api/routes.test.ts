@@ -12,12 +12,13 @@ const repo = vi.hoisted(() => ({
     getProgress: vi.fn(),
     updateProgress: vi.fn(),
     claimForRegeneration: vi.fn(),
+    claimForReschedule: vi.fn(),
     delete: vi.fn(),
   },
   cityRepo: { getDetail: vi.fn() },
   pingDb: vi.fn(),
 }));
-const runtime = vi.hoisted(() => ({ startTripJob: vi.fn(), startDayRegeneration: vi.fn() }));
+const runtime = vi.hoisted(() => ({ startTripJob: vi.fn(), startDayRegeneration: vi.fn(), startReschedule: vi.fn() }));
 vi.mock("@/server/db", () => repo);
 vi.mock("@/server/agent/runtime", () => runtime);
 
@@ -27,6 +28,7 @@ import { POST as unlock } from "./unlock/route";
 import { DELETE as deleteTrip, GET as getTrip } from "./v1/trips/[id]/route";
 import { GET as events } from "./v1/trips/[id]/events/route";
 import { POST as regenerate } from "./v1/trips/[id]/days/[dayIndex]/regenerate/route";
+import { POST as reschedule } from "./v1/trips/[id]/reschedule/route";
 import { GET as listTrips, POST as createTrip } from "./v1/trips/route";
 import { GET as openapi } from "./v1/openapi.json/route";
 
@@ -190,6 +192,37 @@ describe("GET /api/v1/trips/{id}/events (SSE)", () => {
     await reader.cancel();
     await new Promise((r) => setTimeout(r, 700)); // 다음 폴링 한 번이 지나도 예외가 없어야 한다
     repo.tripRepo.getProgress.mockReset();
+  });
+});
+
+describe("POST /api/v1/trips/{id}/reschedule (일정 조정)", () => {
+  const call = (body: unknown) => reschedule(post("http://x", body), ctx({ id: ID }));
+
+  it("202로 시작하고 일수·출발일·요청을 작업에 넘긴다", async () => {
+    repo.tripRepo.claimForReschedule.mockResolvedValueOnce("ok");
+    const res = await call({ days: 4, startDate: "2027-06-01", request: "둘째 날은 미술관 위주" });
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ tripId: ID, days: 4, status: "running", eventsUrl: `/api/v1/trips/${ID}/events` });
+    expect(runtime.startReschedule).toHaveBeenCalledWith(ID, { days: 4, startDate: "2027-06-01", request: "둘째 날은 미술관 위주" });
+  });
+
+  it("검증 오류 400 (일수 범위·모르는 필드·긴 요청) — 작업을 시작하지 않는다", async () => {
+    runtime.startReschedule.mockClear();
+    repo.tripRepo.claimForReschedule.mockClear();
+    for (const body of [{ days: 0 }, { days: 15 }, { days: 3, extra: true }, { days: 3, request: "x".repeat(301) }, null]) {
+      const res = await call(body);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: "VALIDATION_ERROR" });
+    }
+    expect(repo.tripRepo.claimForReschedule).not.toHaveBeenCalled();
+    expect(runtime.startReschedule).not.toHaveBeenCalled();
+  });
+
+  it("없음 404 / 작업 중·실패한 여행 409", async () => {
+    for (const [claim, status] of [["notFound", 404], ["busy", 409], ["failed", 409]] as const) {
+      repo.tripRepo.claimForReschedule.mockResolvedValueOnce(claim);
+      expect((await call({ days: 3 })).status).toBe(status);
+    }
   });
 });
 

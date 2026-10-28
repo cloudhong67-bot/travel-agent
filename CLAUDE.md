@@ -28,7 +28,7 @@
 | `src/server/adapters/search` | `WebSearchProvider` / `geminiGoogleSearch.ts` (출처는 `groundingMetadata`에서 추출) |
 | `src/server/adapters/maps` | `MapsProvider` / `google.ts`, `naver.ts`, `index.ts`(`getMapsProvider(countryCode)`: KR→naver, 그 외→google) |
 | `src/server/adapters/knowledge` | Wikipedia/Wikivoyage 요약 |
-| `src/server/agent` | 에이전트: `orchestrator.ts`(PRD 7장 7단계 파이프라인 순서만), `job.ts`(`AgentJob`: 진행 기록·단계 span·사용량·완료/부분/실패 처리), `collect.ts`(병렬 수집), `assign.ts`(LLM 일자 배분 + 실패 시 `fallbackAssignment`), `plan.ts`+`optimizer.ts`(동선, 순수 함수), `validator.ts`, `budget.ts`(비용 가드), `runtime.ts`(운영 의존성·작업 시작), `memoryStore.ts`(테스트·평가용 저장소) |
+| `src/server/agent` | 에이전트: `orchestrator.ts`(PRD 7장 7단계 파이프라인 순서만), `job.ts`(`AgentJob`: 진행 기록·단계 span·사용량·완료/부분/실패 처리), `collect.ts`(병렬 수집), `assign.ts`(LLM 일자 배분 + 실패 시 `fallbackAssignment`), `plan.ts`+`optimizer.ts`(동선, 순수 함수), `stay.ts`(추천 체류 일수, 순수 함수), `validator.ts`, `budget.ts`(비용 가드), `runtime.ts`(운영 의존성·작업 시작), `memoryStore.ts`(테스트·평가용 저장소) |
 | `src/server/agent/prompts` | 프롬프트 문자열. 파일 첫 줄에 `version` 주석, 수정 시 버전을 올린다 |
 | `src/instrumentation.ts` | 서버 기동 시 10분 넘게 멈춘 running/queued 작업을 failed로 정리 |
 | `src/server/db` | Prisma 클라이언트 싱글턴(`client.ts`)과 Repository(`tripRepo`, `cityRepo`, `usageRepo`) |
@@ -84,6 +84,9 @@
 - 에이전트 규칙:
   - LLM은 주어진 POI 키(P01…)만 쓸 수 있고, 코드(`enforceAssignment`)가 다시 검증해 목록 밖 항목을 버린다.
   - 운영시간·입장료처럼 출처 데이터에 없는 값은 null. 프롬프트에 `FACT_RULES`를 넣는다.
+  - 예외: 배경지식(역사·문화·기후·매너)은 원문에 없으면 Gemini 일반 지식으로 채우되 `aiFields`에 표시하고 화면에 "AI 요약 정보"로 구분한다 (`NO_FABRICATION_RULES`는 그대로 적용). 원문이 없을 때는 코드가 채운 항목 전부를 AI로 표시한다.
+  - 관광청: 공식 관광청 검색 → 공식 사이트가 없거나 추천 명소가 2곳 미만이면 대체 출처(위키여행·지자체·여행 플랫폼) 검색을 합친다 → 검색이 모두 실패하면 위키여행 요약. `TourismInfo.sourceType`으로 구분.
+  - 추천 체류 일수는 LLM이 아니라 `recommendStay`(명소·박물관 수 ÷ 하루 4곳 + 근교 당일치기 1일)가 정한다. `autoDays`면 그 일수로 생성, 일정 조정(`/reschedule`)은 도시 정보를 재사용해 4~6단계만 다시 돌고 새 일정이 완성될 때만 일수·일자를 바꾼다.
   - 외부 호출은 `budget.ts`의 계측 래퍼를 거친다 (요청당 Gemini 15회·지도 200회, 초과 시 부분 결과 저장). 사용량은 UsageLog에 기록.
   - 오케스트레이터는 `AgentDeps`로 의존성을 주입받는다. 테스트는 MSW + `MemoryAgentStore`, 운영은 `runtime.ts`의 기본 의존성.
   - 국내(KR)는 자동차 기준 이동시간이며 결과 meta에 안내 문구를 남긴다.

@@ -12,7 +12,7 @@ import { agentHandlers, type ScenarioOptions } from "@/test/msw/agentScenario";
 import { server } from "@/test/msw/server";
 import type { LlmProvider } from "@/server/adapters/llm/types";
 import { MemoryAgentStore } from "./memoryStore";
-import { ASSIGN_FALLBACK_WARNING, KR_TRAVEL_NOTICE, runDayRegeneration, runTripJob } from "./orchestrator";
+import { ASSIGN_FALLBACK_WARNING, KR_TRAVEL_NOTICE, runDayRegeneration, runReschedule, runTripJob } from "./orchestrator";
 import { ASSIGNMENT_TOOL_NAME } from "./prompts/assignment";
 import type { AgentDeps, AgentLimits } from "./types";
 
@@ -285,5 +285,121 @@ describe("장애 대응 (fallback)", () => {
     };
     await runTripJob(id, deps);
     expect(store.trips.get(id)).toMatchObject({ status: "failed", errorMessage: expect.stringContaining("오류가 발생했습니다") });
+  });
+});
+
+describe("배경지식 보완 (AI 요약 정보)", () => {
+  it("원문에 없는 항목은 일반 지식으로 채우고 aiFields로 표시한다", async () => {
+    const { store, deps } = setup();
+    const id = store.createTrip(porto);
+    await runTripJob(id, deps);
+    const bg = (await store.getCity(store.trips.get(id)!.cityId!))!.background!;
+    expect(bg.bestTime).toBeTruthy();
+    expect(bg.etiquette).toBeTruthy();
+    expect(bg.aiFields).toEqual(["bestTime", "etiquette"]);
+    expect(bg.sources[0].url).toContain("wikipedia.org");
+  });
+
+  it("위키 문서가 없어도 비우지 않고, 채운 항목은 모두 AI 요약 정보가 된다", async () => {
+    const { store, deps, counters } = setup({ noWiki: true });
+    const id = store.createTrip(porto);
+    await runTripJob(id, deps);
+    const bg = (await store.getCity(store.trips.get(id)!.cityId!))!.background!;
+    expect(counters.gemini.history).toBe(1); // 원문이 없어도 요약을 만든다
+    expect(bg.sources).toEqual([]);
+    expect(bg.history).toBeTruthy();
+    expect(bg.aiFields.sort()).toEqual(["bestTime", "culture", "etiquette", "history"]);
+  });
+});
+
+describe("관광청 정보 대체 출처", () => {
+  const tourismOf = async (store: MemoryAgentStore, id: string) => (await store.getCity(store.trips.get(id)!.cityId!))!.tourismBoard!;
+
+  it("공식 관광청 정보가 충분하면 검색 1회로 끝낸다", async () => {
+    const { store, deps, counters } = setup();
+    const id = store.createTrip(porto);
+    await runTripJob(id, deps);
+    expect(counters.gemini.search).toBe(1);
+    expect((await tourismOf(store, id)).sourceType).toBe("official");
+  });
+
+  it("공식 사이트가 없으면 대체 출처(위키여행·여행 플랫폼)를 더 검색해 합친다", async () => {
+    const { store, deps, counters } = setup({ tourism: "thin" });
+    const id = store.createTrip(porto);
+    await runTripJob(id, deps);
+    const t = await tourismOf(store, id);
+    expect(counters.gemini.search).toBe(2);
+    expect(t.sourceType).toBe("alternative");
+    expect(t.summary).toContain("위키여행 기준");
+    expect(t.recommended).toEqual(["Torre dos Clérigos", "Ribeira", "Livraria Lello"]); // 중복 없이 합침
+    expect(t.sources.map((s) => s.url)).toContain("https://en.wikivoyage.org/wiki/Porto");
+    expect(t.searchEntryPointHtml).toContain("alt"); // 두 검색의 검색 추천을 모두 표시
+    expect(t.searchEntryPointHtml).toContain("first");
+  });
+
+  it("검색이 모두 실패하면 위키여행 요약으로 최소 정보를 만든다 (경고 없음)", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { store, deps } = setup({ tourism: "fail" });
+    const id = store.createTrip(porto);
+    await runTripJob(id, deps);
+    const t = await tourismOf(store, id);
+    expect(t).toMatchObject({ sourceType: "alternative", recommended: [], searchEntryPointHtml: null });
+    expect(t.summary).toContain("리베이라");
+    expect(t.sources[0].url).toContain("wikivoyage.org");
+    expect(store.trips.get(id)!.meta!.warnings.some((w) => w.includes("관광청 조사"))).toBe(false);
+  });
+});
+
+describe("추천 체류 일수·일정 조정", () => {
+  it("결과 meta에 추천 체류 일수를 남긴다", async () => {
+    const { store, deps } = setup();
+    const id = store.createTrip(porto);
+    await runTripJob(id, deps);
+    const stay = store.trips.get(id)!.meta!.recommendedStay!;
+    expect(stay.days).toBeGreaterThanOrEqual(2);
+    expect(stay.nights).toBe(stay.days - 1);
+    expect(stay.reason).toMatch(/명소·박물관 \d+곳/);
+  });
+
+  it("추천 일수로 자동: 여행 일수를 추천값으로 바꿔 그 일수만큼 일정을 만든다", async () => {
+    const { store, deps } = setup();
+    const id = store.createTrip({ ...porto, days: 1, autoDays: true });
+    await runTripJob(id, deps);
+    const t = store.trips.get(id)!;
+    const stay = t.meta!.recommendedStay!;
+    expect(t.status).toBe("done");
+    expect(t.days).toBe(stay.days);
+    expect(await store.getDays(id)).toHaveLength(stay.days);
+    expect(t.meta!.notices.some((n) => n.includes("추천 체류 일수"))).toBe(true);
+  });
+
+  it("일정 조정: 일수·출발일을 바꾸고 사용자 요청을 배분에 넘겨 일정 전체를 다시 만든다", async () => {
+    const { store, deps, counters } = setup();
+    const id = store.createTrip(porto); // 3일, 2027-05-03 출발
+    await runTripJob(id, deps);
+
+    await runReschedule(id, { days: 2, startDate: null, request: "둘째 날은 미술관 위주" }, deps);
+
+    const t = store.trips.get(id)!;
+    expect(t).toMatchObject({ status: "done", errorMessage: null, days: 2, startDate: null, stepMessage: "1박 2일 일정으로 조정 완료" });
+    const days = await store.getDays(id);
+    expect(days.map((d) => d.dayIndex)).toEqual([0, 1]); // 3일차는 지워진다
+    expect(days.every((d) => d.date === null)).toBe(true);
+    expect(counters.lastAssignmentPrompt).toContain("사용자 요청");
+    expect(counters.lastAssignmentPrompt).toContain("둘째 날은 미술관 위주");
+  });
+
+  it("일정 조정 중 비용 상한에 걸리면 기존 일정·일수를 그대로 둔다", async () => {
+    const { store, deps } = setup();
+    const id = store.createTrip(porto);
+    await runTripJob(id, deps);
+    const before = await store.getDays(id);
+
+    await runReschedule(id, { days: 5 }, { ...deps, limits: { maxGeminiCalls: 0 } });
+
+    const t = store.trips.get(id)!;
+    expect(t).toMatchObject({ status: "done", days: 3, startDate: "2027-05-03" });
+    expect(t.errorMessage).toMatch(/기존 일정을 유지/);
+    expect(await store.getDays(id)).toEqual(before);
   });
 });
