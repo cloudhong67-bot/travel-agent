@@ -86,6 +86,17 @@ export function extractSources(response: Pick<GenerateContentResponse, "candidat
   return [...seen.values()];
 }
 
+const GROUNDING_REDIRECT_HOST = "vertexaisearch.cloud.google.com";
+
+export function isGroundingRedirect(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" && (u.hostname === GROUNDING_REDIRECT_HOST || u.hostname.endsWith(`.${GROUNDING_REDIRECT_HOST}`));
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Gemini API의 그라운딩 URI는 vertexaisearch.cloud.google.com 리다이렉트 링크로 오고 title에는 도메인만 담기는 경우가 많다.
  * 관광청 화이트리스트 판정·저장을 위해 Location 헤더로 원문 URL을 얻는다. 실패하면 원래 URI를 유지한다.
@@ -93,13 +104,15 @@ export function extractSources(response: Pick<GenerateContentResponse, "candidat
  */
 export async function resolveSources(sources: WebSource[]): Promise<WebSource[]> {
   const settled = await mapWithConcurrency(sources, 3, async (source) => {
-    if (!new URL(source.url).hostname.endsWith("vertexaisearch.cloud.google.com")) return source;
+    // 서버가 요청을 보내는 대상이므로(SSRF) Google 리다이렉트 호스트의 https만 허용한다
+    if (!isGroundingRedirect(source.url)) return source;
     const location = await withTimeoutRetry(async (signal) => {
       const res = await fetch(source.url, { method: "GET", redirect: "manual", signal });
       await res.body?.cancel();
       return res.headers.get("location");
     });
-    return location ? { ...source, url: location } : source;
+    // 원문 URL은 화면의 링크가 되므로 http(s)만 받는다
+    return location && /^https?:\/\//i.test(location) ? { ...source, url: location } : source;
   });
   return settled.map((r, i) => (r.status === "fulfilled" ? r.value : sources[i]));
 }

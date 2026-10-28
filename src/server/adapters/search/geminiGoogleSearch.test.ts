@@ -1,6 +1,6 @@
 import type { GenerateContentResponse } from "@google/genai";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { extractSources, resolveSources } from "./geminiGoogleSearch";
+import { extractSources, isGroundingRedirect, resolveSources } from "./geminiGoogleSearch";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -56,3 +56,13 @@ describe("resolveSources", () => {
 class HttpLikeError extends Error {
   status = 400; // 재시도 대상이 아니게 해서 테스트를 빠르게 끝낸다
 }
+
+describe("isGroundingRedirect (서버가 따라가는 URL 제한, SSRF)", () => {
+  it("Google 그라운딩 리다이렉트 호스트의 https만 허용한다", () => {
+    expect(isGroundingRedirect("https://vertexaisearch.cloud.google.com/grounding-api-redirect/abc")).toBe(true);
+    expect(isGroundingRedirect("http://vertexaisearch.cloud.google.com/x")).toBe(false);
+    expect(isGroundingRedirect("https://evilvertexaisearch.cloud.google.com.attacker.example/x")).toBe(false);
+    expect(isGroundingRedirect("https://169.254.169.254/latest/meta-data")).toBe(false);
+    expect(isGroundingRedirect("not a url")).toBe(false);
+  });
+});

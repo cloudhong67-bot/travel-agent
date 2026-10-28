@@ -6,8 +6,16 @@ import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { PIPELINE_STEPS } from "@/lib/labels";
-import { ProgressEventSchema, type AgentStep, type ProgressEvent, type TripDetail } from "@/lib/schemas";
+import { ApiErrorSchema, ProgressEventSchema, type AgentStep, type ProgressEvent, type TripDetail } from "@/lib/schemas";
 import { cn } from "@/lib/utils";
+
+const parseJson = (text: string): unknown => {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+};
 
 /**
  * 진행 화면: /api/v1/trips/{id}/events SSE를 받아 단계 목록과 진행률을 보여준다.
@@ -24,8 +32,8 @@ export function TripProgress({ trip, title, onFinished }: { trip: TripDetail; ti
   useEffect(() => {
     const source = new EventSource(`/api/v1/trips/${trip.id}/events`);
     source.addEventListener("progress", (e) => {
-      const parsed = ProgressEventSchema.safeParse(JSON.parse((e as MessageEvent<string>).data));
-      if (!parsed.success) return;
+      const parsed = ProgressEventSchema.safeParse(parseJson((e as MessageEvent<string>).data));
+      if (!parsed.success) return; // 형식이 어긋난 이벤트는 건너뛰고 다음 이벤트를 기다린다
       setEvent(parsed.data);
       if (parsed.data.status === "done" || parsed.data.status === "failed") {
         source.close();
@@ -36,7 +44,8 @@ export function TripProgress({ trip, title, onFinished }: { trip: TripDetail; ti
     source.addEventListener("error", (e) => {
       if (e instanceof MessageEvent && typeof e.data === "string") {
         source.close();
-        toast.error("진행 상황을 받을 수 없습니다", { description: JSON.parse(e.data).message });
+        const body = ApiErrorSchema.safeParse(parseJson(e.data));
+        toast.error("진행 상황을 받을 수 없습니다", { description: body.success ? body.data.message : "잠시 후 새로고침하세요." });
       }
     });
     return () => source.close();

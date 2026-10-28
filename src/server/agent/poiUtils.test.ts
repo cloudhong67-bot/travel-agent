@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { assignKeys, closedWeekdays, dayDate, dedupePois, isOfficialSource, normalizeName, rankSources } from "./poiUtils";
+import { assignKeys, dayDate, dedupePois, isOfficialSource, normalizeName, rankSources } from "./poiUtils";
+import { closedWeekdays } from "@/lib/hours";
 import type { AgentPoi } from "./types";
 
 const poi = (name: string, lat: number, lon: number, patch: Partial<AgentPoi> = {}): AgentPoi => ({

@@ -73,6 +73,7 @@ npm run local:down      # 중지 (DB 데이터는 mssql-data 볼륨에 유지)
 
 - 브라우저에서 `http://localhost:3300` → `/unlock`에 `.env.local`의 `APP_ACCESS_TOKEN` 입력
 - 포트 변경: `.env.local`에 `LOCAL_APP_PORT=<포트>` (기본 3300, 개발 서버 3000과 동시 실행 가능)
+- 기본은 이 PC에서만 접속된다(127.0.0.1). 휴대폰 등 같은 네트워크에서 열려면 `.env.local`에 `LOCAL_APP_BIND=0.0.0.0`. SQL Server(1433)는 항상 이 PC에서만 열린다
 - 실제 모드는 개발 서버와 같은 `trippilot` DB를 쓴다. 코드를 바꿨으면 `npm run local:up`을 다시 실행하면 이미지를 새로 빌드한다
 - Google 브라우저 키에 HTTP 리퍼러 제한을 걸었다면 `http://localhost:3300/*`도 허용해야 지도가 뜬다
 

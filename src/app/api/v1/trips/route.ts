@@ -1,16 +1,15 @@
 import { pickEnv } from "@/lib/env";
 import { CreateTripRequestSchema, ListTripsQuerySchema } from "@/lib/schemas";
 import { startTripJob } from "@/server/agent/runtime";
-import { apiError, badRequest, readJson, withErrorHandling } from "@/server/api/respond";
+import { apiError, parseInput, readJson, withErrorHandling } from "@/server/api/respond";
 import { tripRepo } from "@/server/db";
 
 /** POST /api/v1/trips — 일정 생성 작업 시작. 에이전트는 백그라운드로 돌고 즉시 202를 반환한다 */
 export const POST = withErrorHandling(async (request: Request) => {
-  const parsed = CreateTripRequestSchema.safeParse(await readJson(request));
-  if (!parsed.success) return badRequest(parsed.error);
+  const input = parseInput(CreateTripRequestSchema, await readJson(request));
 
   const { DAILY_TRIP_LIMIT } = pickEnv(["DAILY_TRIP_LIMIT"]);
-  const result = await tripRepo.createWithDailyLimit(parsed.data, { limit: DAILY_TRIP_LIMIT });
+  const result = await tripRepo.createWithDailyLimit(input, { limit: DAILY_TRIP_LIMIT });
   if (!result.ok) {
     return apiError(
       429,
@@ -30,8 +29,6 @@ export const POST = withErrorHandling(async (request: Request) => {
 
 /** GET /api/v1/trips — 목록 */
 export const GET = withErrorHandling(async (request: Request) => {
-  const params = Object.fromEntries(new URL(request.url).searchParams);
-  const parsed = ListTripsQuerySchema.safeParse(params);
-  if (!parsed.success) return badRequest(parsed.error);
-  return Response.json(await tripRepo.list(parsed.data));
+  const query = parseInput(ListTripsQuerySchema, Object.fromEntries(new URL(request.url).searchParams));
+  return Response.json(await tripRepo.list(query));
 });

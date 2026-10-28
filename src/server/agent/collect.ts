@@ -1,6 +1,7 @@
 /**
  * PRD 7장 3단계 "병렬 수집"의 개별 작업. 각 함수는 독립적으로 실패할 수 있고, 오케스트레이터가 allSettled로 묶는다.
  */
+import { hostnameOf } from "@/lib/url";
 import { haversineM } from "@/server/adapters/maps/naver";
 import type { LlmProvider } from "@/server/adapters/llm/types";
 import type { LatLng, MapsProvider, Place, TravelMode } from "@/server/adapters/maps/types";
@@ -60,14 +61,8 @@ export async function collectTourism(
   const parsed = parseTourismAnswer(res.summary);
   const sources = [...res.sources];
   // 모델이 답한 공식 사이트는 검색 출처에 같은 도메인이 없을 때만 추가한다 (경로만 다른 중복 카드 방지)
-  const host = (u: string) => {
-    try {
-      return new URL(u).hostname.replace(/^www\./, "");
-    } catch {
-      return u;
-    }
-  };
-  if (parsed.officialSite && !sources.some((s) => host(s.url) === host(parsed.officialSite!))) {
+  const officialHost = parsed.officialSite ? hostnameOf(parsed.officialSite) : null;
+  if (parsed.officialSite && officialHost && !sources.some((s) => hostnameOf(s.url) === officialHost)) {
     sources.push({ title: "공식 관광청", url: parsed.officialSite });
   }
   return {

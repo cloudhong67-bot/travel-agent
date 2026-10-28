@@ -1,6 +1,7 @@
 import { ACCESS_COOKIE, ACCESS_COOKIE_MAX_AGE, safeTokenEquals, sanitizeNextPath } from "@/lib/auth";
 import { pickEnv } from "@/lib/env";
 import { UnlockFormSchema } from "@/lib/schemas";
+import { withErrorHandling } from "@/server/api/respond";
 
 /** 무차별 대입을 늦추기 위한 실패 지연 */
 const FAILURE_DELAY_MS = 500;
@@ -12,7 +13,7 @@ const FAILURE_DELAY_MS = 500;
  * Location은 상대 경로로 보낸다. standalone 서버의 request.url은 브라우저가 접속한 주소가 아니라
  * 서버 바인딩 주소(예: http://0.0.0.0:3000)라서, 이것으로 절대 URL을 만들면 프록시·포트 매핑 뒤에서 깨진다.
  */
-export async function POST(request: Request) {
+export const POST = withErrorHandling(async (request: Request) => {
   const form = await request.formData().catch(() => null);
   const parsed = UnlockFormSchema.safeParse({
     token: form?.get("token") ?? "",
@@ -42,4 +43,4 @@ export async function POST(request: Request) {
   ].join("; ");
 
   return new Response(null, { status: 303, headers: { Location: next, "Set-Cookie": cookie } });
-}
+});

@@ -12,7 +12,7 @@ import { agentHandlers, type ScenarioOptions } from "@/test/msw/agentScenario";
 import { server } from "@/test/msw/server";
 import type { LlmProvider } from "@/server/adapters/llm/types";
 import { MemoryAgentStore } from "./memoryStore";
-import { KR_TRAVEL_NOTICE, runDayRegeneration, runTripJob } from "./orchestrator";
+import { ASSIGN_FALLBACK_WARNING, KR_TRAVEL_NOTICE, runDayRegeneration, runTripJob } from "./orchestrator";
 import { ASSIGNMENT_TOOL_NAME } from "./prompts/assignment";
 import type { AgentDeps, AgentLimits } from "./types";
 
@@ -234,5 +234,56 @@ describe("runDayRegeneration", () => {
     expect(t.errorMessage).toMatch(/Gemini 호출 상한/);
     expect(t.meta!.needsReviewDays).toEqual([0]);
     expect(await store.getDays(id)).toEqual(before); // 새 일정이 없으므로 기존 일자 그대로
+  });
+});
+
+describe("장애 대응 (fallback)", () => {
+  /** 일자 배분(submitItinerary 도구) 요청만 실패시키는 LLM 래퍼 */
+  const failAssignment = (deps: AgentDeps): LlmProvider => ({
+    async generate(req) {
+      const isAssignment = req.tools?.some((t) => t.name === ASSIGNMENT_TOOL_NAME) || req.systemInstruction?.includes("결과는 JSON으로만 답한다");
+      if (isAssignment) throw Object.assign(new Error("UNAVAILABLE"), { status: 503 });
+      return deps.llm.generate(req);
+    },
+  });
+
+  it("LLM 일자 배분이 실패해도 거리 기준 대체 배분으로 일정을 완성한다", async () => {
+    const { store, deps } = setup();
+    const id = store.createTrip(porto);
+    await runTripJob(id, { ...deps, llm: failAssignment(deps) });
+
+    const t = store.trips.get(id)!;
+    expect(t.status).toBe("done");
+    expect(t.meta!.warnings).toContain(ASSIGN_FALLBACK_WARNING);
+    const days = await store.getDays(id);
+    expect(days).toHaveLength(3);
+    expect(days.every((d) => d.stops.length > 0)).toBe(true);
+    const keys = days.flatMap((d) => d.stops.map((s) => s.name));
+    expect(new Set(keys).size).toBe(keys.length); // 같은 명소를 두 번 배정하지 않는다
+  });
+
+  it("진행 기록이 한두 번 실패해도 작업은 끝까지 진행한다", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { store, deps } = setup();
+    const id = store.createTrip(porto);
+    const original = store.updateProgress.bind(store);
+    let calls = 0;
+    store.updateProgress = async (tripId, u) => {
+      if (++calls % 5 === 2) throw new Error("deadlock victim"); // 간헐적 실패 (연속 아님)
+      return original(tripId, u);
+    };
+    await runTripJob(id, deps);
+    expect(store.trips.get(id)!.status).toBe("done");
+  });
+
+  it("진행 기록이 연속으로 실패하면(DB 장애) 작업을 failed로 끝낸다", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { store, deps } = setup();
+    const id = store.createTrip(porto);
+    store.updateProgress = async () => {
+      throw new Error("db down");
+    };
+    await runTripJob(id, deps);
+    expect(store.trips.get(id)).toMatchObject({ status: "failed", errorMessage: expect.stringContaining("오류가 발생했습니다") });
   });
 });

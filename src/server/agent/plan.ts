@@ -4,8 +4,10 @@
 import { haversineM } from "@/server/adapters/maps/naver";
 import type { LatLng, MapsProvider, TravelMode } from "@/server/adapters/maps/types";
 import type { DayAssignment } from "./assign";
+import { BudgetExceededError } from "./budget";
 import { optimizeTour } from "./optimizer";
-import { dayDate, WEEKDAY_KO } from "./poiUtils";
+import { WEEKDAY_KO } from "@/lib/hours";
+import { dayDate } from "./poiUtils";
 import type { DayPlan, NearbyTown, PlannedStop } from "./types";
 
 export const DAY_START = "09:00";
@@ -35,11 +37,27 @@ function estimateMinutes(a: LatLng, b: LatLng, mode: TravelMode): number {
   return Math.round(((haversineM(a, b) / 1000) * DETOUR * 60) / ESTIMATE_KMH[mode]);
 }
 
+type MatrixResult = Awaited<ReturnType<MapsProvider["travelTimeMatrix"]>>;
+
+/**
+ * 행렬 API 호출. 실패(장애·시간 초과)하면 빈 결과로 대신해 직선거리 추정으로 넘어가게 한다.
+ * 비용 상한 초과는 부분 저장 흐름으로 가야 하므로 그대로 던진다.
+ */
+async function matrixOrEmpty(maps: MapsProvider, origins: LatLng[], destinations: LatLng[], mode: TravelMode): Promise<MatrixResult> {
+  try {
+    return await maps.travelTimeMatrix(origins, destinations, mode);
+  } catch (error) {
+    if (error instanceof BudgetExceededError) throw error;
+    console.warn(`[plan] ${maps.name} 이동시간 행렬 실패 — 직선거리로 추정합니다`, error);
+    return { supported: false, provider: maps.name, reason: "이동시간 API 호출 실패" };
+  }
+}
+
 /**
  * 지점 간 이동시간(분) 행렬.
  *  - Naver: 쌍별 호출이라 비용이 크므로 상삼각만 호출하고 대칭으로 채운다 (자동차 기준 근사)
  *  - Google: 요청 모드 행렬에서 빈 칸(예: 일본은 Routes API 대중교통 미제공)은 자동차 행렬로 채운다
- *  - 그래도 빈 칸은 직선거리로 추정
+ *  - 그래도 빈 칸(API 실패 포함)은 직선거리로 추정
  */
 export async function travelMinutes(maps: MapsProvider, points: LatLng[], mode: TravelMode): Promise<MinutesMatrix> {
   const n = points.length;
@@ -49,7 +67,7 @@ export async function travelMinutes(maps: MapsProvider, points: LatLng[], mode: 
   if (maps.name === "naver") {
     basis = "driving";
     for (let i = 0; i < n - 1; i++) {
-      const row = await maps.travelTimeMatrix([points[i]], points.slice(i + 1), "driving");
+      const row = await matrixOrEmpty(maps, [points[i]], points.slice(i + 1), "driving");
       if (!row.supported) break;
       row.cells[0].forEach((cell, k) => {
         const j = i + 1 + k;
@@ -57,7 +75,7 @@ export async function travelMinutes(maps: MapsProvider, points: LatLng[], mode: 
       });
     }
   } else {
-    const fill = (m: Awaited<ReturnType<MapsProvider["travelTimeMatrix"]>>, onlyEmpty: boolean) => {
+    const fill = (m: MatrixResult, onlyEmpty: boolean) => {
       if (!m.supported) return;
       m.cells.forEach((row, i) =>
         row.forEach((cell, j) => {
@@ -65,12 +83,12 @@ export async function travelMinutes(maps: MapsProvider, points: LatLng[], mode: 
         }),
       );
     };
-    fill(await maps.travelTimeMatrix(points, points, mode), false);
+    fill(await matrixOrEmpty(maps, points, points, mode), false);
     const missing = minutes.flat().filter((v) => v === null).length;
     if (missing > 0 && mode !== "driving") {
       const total = n * n - n;
       basis = missing === total ? "driving" : "mixed";
-      fill(await maps.travelTimeMatrix(points, points, "driving"), true);
+      fill(await matrixOrEmpty(maps, points, points, "driving"), true);
     }
   }
 

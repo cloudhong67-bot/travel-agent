@@ -157,6 +157,40 @@ describe("GET /api/v1/trips/{id}/events (SSE)", () => {
     repo.tripRepo.getProgress.mockResolvedValueOnce(null);
     expect((await events(new Request("http://x"), ctx({ id: ID }))).status).toBe(404);
   });
+
+  const progressEvent = (status: string, progress: number) => ({ tripId: ID, status, step: status === "done" ? "done" : "collect", message: status, progress, errorMessage: null });
+
+  it("DB 조회가 일시적으로 실패해도 스트림을 끊지 않고 다음 폴링에서 이어간다", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    repo.tripRepo.getProgress
+      .mockResolvedValueOnce(progressEvent("running", 20))
+      .mockRejectedValueOnce(new Error("connection reset"))
+      .mockResolvedValueOnce(progressEvent("done", 100));
+    const text = await (await events(new Request("http://x"), ctx({ id: ID }))).text();
+    expect(text).not.toContain("event: error");
+    expect([...text.matchAll(/"progress":(\d+)/g)].map((m) => Number(m[1]))).toEqual([20, 100]);
+  });
+
+  it("DB 조회가 연속 3번 실패하면 error 이벤트를 보내고 닫는다", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    repo.tripRepo.getProgress.mockResolvedValueOnce(progressEvent("running", 20)).mockRejectedValue(new Error("db down"));
+    const text = await (await events(new Request("http://x"), ctx({ id: ID }))).text();
+    expect(text).toMatch(/event: error\ndata: \{"code":"INTERNAL_ERROR"/);
+    expect(repo.tripRepo.getProgress).toHaveBeenCalledTimes(4);
+    repo.tripRepo.getProgress.mockReset();
+  });
+
+  it("클라이언트가 연결을 끊으면 더 쓰지 않고 조용히 끝낸다", async () => {
+    repo.tripRepo.getProgress.mockResolvedValue(progressEvent("running", 20));
+    const aborter = new AbortController();
+    const res = await events(new Request("http://x", { signal: aborter.signal }), ctx({ id: ID }));
+    const reader = res.body!.getReader();
+    await reader.read(); // retry + 첫 이벤트
+    aborter.abort();
+    await reader.cancel();
+    await new Promise((r) => setTimeout(r, 700)); // 다음 폴링 한 번이 지나도 예외가 없어야 한다
+    repo.tripRepo.getProgress.mockReset();
+  });
 });
 
 describe("기타 엔드포인트", () => {
@@ -203,7 +237,7 @@ describe("기타 엔드포인트", () => {
   });
 
   it("openapi.json은 OpenAPI 3.1 문서", async () => {
-    const doc = await openapi().json();
+    const doc = await (await openapi()).json();
     expect(doc.openapi).toBe("3.1.0");
   });
 });

@@ -4,7 +4,8 @@
  */
 import type { LlmProvider } from "@/server/adapters/llm/types";
 import { parseJsonOutput } from "./collect";
-import { closedWeekdays, dayDate, WEEKDAY_KO } from "./poiUtils";
+import { closedWeekdays, WEEKDAY_KO } from "@/lib/hours";
+import { dayDate } from "./poiUtils";
 import {
   ASSIGNMENT_SYSTEM,
   ASSIGNMENT_TOOL_NAME,
@@ -14,7 +15,7 @@ import {
   assignmentUserPrompt,
   type Assignment,
 } from "./prompts/assignment";
-import type { AgentPoi, NearbyTown, TripInput } from "./types";
+import type { AgentPoi, NearbyTown, PoiCategory, TripInput } from "./types";
 
 export interface DayAssignment {
   dayIndex: number;
@@ -94,6 +95,46 @@ export async function assignDays(args: {
 
   const assignment = await requestAssignment(args.llm, prompt);
   return enforceAssignment(assignment, { dayIndexes, pois, nearbyTowns, allowDayTrip: trip.days >= 3 });
+}
+
+// ---------- LLM 없이 배분 (대체 경로) ----------
+
+export const FALLBACK_STOPS_PER_DAY = 4;
+const FALLBACK_STAY_MINS: Record<PoiCategory, number> = { sight: 60, museum: 90, food: 60 };
+
+/**
+ * LLM 배분이 실패했을 때(장애·할당량 초과)의 대체 배분 — 순수 함수, 같은 입력이면 같은 결과.
+ * 관광청 추천 → 평점 순으로 하루 최대 4곳을 고르고, 중심점 기준 방위각으로 정렬해 이웃한 장소끼리 같은 날에 묶는다.
+ * 순서·휴무 요일은 이후 단계(동선 최적화·검증)가 처리한다.
+ */
+export function fallbackAssignment(args: { dayIndexes: number[]; pois: AgentPoi[] }): AssignResult {
+  const { dayIndexes, pois } = args;
+  const count = Math.min(pois.length, dayIndexes.length * FALLBACK_STOPS_PER_DAY);
+  const chosen = [...pois]
+    .sort((a, b) => Number(b.origin === "tourism") - Number(a.origin === "tourism") || (b.rating ?? 0) - (a.rating ?? 0))
+    .slice(0, count);
+
+  const lat = chosen.reduce((s, p) => s + p.lat, 0) / (chosen.length || 1);
+  const lon = chosen.reduce((s, p) => s + p.lon, 0) / (chosen.length || 1);
+  const angle = (p: AgentPoi) => Math.atan2(p.lat - lat, p.lon - lon);
+  const sorted = chosen.sort((a, b) => angle(a) - angle(b));
+  // 방위각은 원형(-π와 π가 이웃)이라, -π부터 자르면 서쪽 묶음이 첫날·마지막 날로 갈라진다.
+  // 가장 큰 각도 간격 다음부터 시작해 이웃한 장소가 같은 구간에 들어가게 한다
+  let start = 0;
+  let maxGap = -1;
+  sorted.forEach((p, i) => {
+    const gap = (angle(p) - angle(sorted[(i - 1 + sorted.length) % sorted.length]) + 2 * Math.PI) % (2 * Math.PI);
+    if (gap > maxGap) [maxGap, start] = [gap, i];
+  });
+  const ordered = [...sorted.slice(start), ...sorted.slice(0, start)];
+
+  const perDay = Math.ceil(ordered.length / dayIndexes.length);
+  const days = new Map<number, DayAssignment>();
+  dayIndexes.forEach((dayIndex, i) => {
+    const stops = ordered.slice(i * perDay, (i + 1) * perDay).map((poi) => ({ poi, stayMins: FALLBACK_STAY_MINS[poi.category] }));
+    days.set(dayIndex, { dayIndex, title: stops.length ? "가까운 명소 묶음" : "자유 일정", dayTripTown: null, stops });
+  });
+  return { days, warnings: [] };
 }
 
 /**

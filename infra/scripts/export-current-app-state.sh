@@ -33,7 +33,13 @@ for name in "${!MAP[@]}"; do
     exit 1
   fi
   echo "::add-mask::${value}"
-  echo "${MAP[$name]}=${value}" >> "$GITHUB_ENV"
+  # 값에 줄바꿈이 섞여도 다른 환경변수를 주입할 수 없도록 무작위 구분자 형식으로 쓴다
+  delimiter="EOF_$(openssl rand -hex 16)"
+  {
+    echo "${MAP[$name]}<<${delimiter}"
+    echo "${value}"
+    echo "${delimiter}"
+  } >> "$GITHUB_ENV"
 done
 
 echo "현재 이미지 ${IMAGE}와 비밀값 ${#MAP[@]}개를 이어받습니다."

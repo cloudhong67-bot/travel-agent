@@ -68,12 +68,19 @@ export class WikipediaKnowledge {
   }
 
   /** @param englishName ko 문서가 없거나 언어 링크가 없을 때 사용할 영문 제목 힌트 */
+  /** 한 사이트가 실패해도 다른 사이트 결과는 살린다. 둘 다 실패하면 첫 오류를 던진다 */
   async getCityKnowledge(name: string, englishName?: string): Promise<CityKnowledge> {
-    const [wikipedia, wikivoyage] = await Promise.all([
+    const [wikipedia, wikivoyage] = await Promise.allSettled([
       this.getSummary("wikipedia", name, englishName),
       this.getSummary("wikivoyage", name, englishName),
     ]);
-    return { wikipedia, wikivoyage };
+    if (wikipedia.status === "rejected" && wikivoyage.status === "rejected") throw wikipedia.reason;
+    const value = (r: PromiseSettledResult<WikiSummary | null>, site: WikiSite) => {
+      if (r.status === "fulfilled") return r.value;
+      console.warn(`[wiki] ${site} 조회 실패 — 다른 출처만 사용`, r.reason);
+      return null;
+    };
+    return { wikipedia: value(wikipedia, "wikipedia"), wikivoyage: value(wikivoyage, "wikivoyage") };
   }
 
   async getSummary(site: WikiSite, name: string, englishName?: string): Promise<WikiSummary | null> {

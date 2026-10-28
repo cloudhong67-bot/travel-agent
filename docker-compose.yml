@@ -12,7 +12,10 @@ services:
       # .env.local 의 MSSQL_SA_PASSWORD 를 사용 (복잡도 규칙: 8자 이상, 대·소문자·숫자·기호 중 3종)
       MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?.env.local 에 MSSQL_SA_PASSWORD 를 설정하세요}
     ports:
-      - "1433:1433"
+      # 이 PC에서만 접속 (같은 네트워크의 다른 기기에 sa 계정 DB를 열지 않는다).
+      # Node는 localhost를 ::1로 먼저 풀기 때문에 IPv6 루프백도 함께 연다
+      - "127.0.0.1:1433:1433"
+      - "[::1]:1433:1433"
     volumes:
       - mssql-data:/var/opt/mssql
     healthcheck:
@@ -62,8 +65,10 @@ services:
       # .env.local의 DATABASE_URL(localhost)은 컨테이너 안에서 쓸 수 없으므로 compose 서비스 이름으로 바꾼다
       DATABASE_URL: sqlserver://mssql:1433;database=${LOCAL_DB_NAME:-trippilot};user=sa;password=${MSSQL_SA_PASSWORD};encrypt=true;trustServerCertificate=true
     ports:
-      # 개발 서버(npm run dev, 3000)와 동시에 띄울 수 있도록 기본 3300
-      - "${LOCAL_APP_PORT:-3300}:3000"
+      # 개발 서버(npm run dev, 3000)와 동시에 띄울 수 있도록 기본 3300.
+      # 기본은 이 PC에서만 접속. 휴대폰 등 같은 네트워크 기기에서 열려면 .env.local에 LOCAL_APP_BIND=0.0.0.0
+      - "${LOCAL_APP_BIND:-127.0.0.1}:${LOCAL_APP_PORT:-3300}:3000"
+      - "[::1]:${LOCAL_APP_PORT:-3300}:3000"
     restart: unless-stopped
 
 volumes:

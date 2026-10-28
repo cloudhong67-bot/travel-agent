@@ -1,3 +1,4 @@
+import { hostnameOf } from "@/lib/url";
 import { haversineM } from "@/server/adapters/maps/naver";
 import type { AgentPoi } from "./types";
 
@@ -80,12 +81,8 @@ const OFFICIAL_HOST_PATTERNS = [
 ];
 
 export function isOfficialSource(url: string): boolean {
-  try {
-    const host = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
-    return OFFICIAL_HOST_PATTERNS.some((re) => re.test(host));
-  } catch {
-    return false;
-  }
+  const host = hostnameOf(url);
+  return host !== null && OFFICIAL_HOST_PATTERNS.some((re) => re.test(host));
 }
 
 /** 정부·관광청 도메인 출처를 앞으로 (안정 정렬) */
@@ -96,29 +93,7 @@ export function rankSources<T extends { url: string }>(sources: T[]): (T & { off
     .map(({ i: _i, ...s }) => s as T & { official: boolean });
 }
 
-// ---------- 운영시간 ----------
-
-const WEEKDAYS: Record<string, number> = {
-  일요일: 0, 월요일: 1, 화요일: 2, 수요일: 3, 목요일: 4, 금요일: 5, 토요일: 6,
-  sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6,
-};
-export const WEEKDAY_KO = ["일", "월", "화", "수", "목", "금", "토"];
-
-/**
- * 공급자의 요일별 운영시간 문자열(예: "월요일: 휴무일", "Monday: Closed")에서 휴무 요일(0=일)을 뽑는다.
- * 운영시간 정보가 없으면 null — 알 수 없음이지 "매일 영업"이 아니다.
- */
-export function closedWeekdays(hours: string[] | null): Set<number> | null {
-  if (!hours || hours.length === 0) return null;
-  const closed = new Set<number>();
-  for (const line of hours) {
-    const [label, ...rest] = line.split(/[:：]/);
-    const day = WEEKDAYS[label.trim().toLowerCase()];
-    if (day === undefined) continue;
-    if (/휴무|closed|定休|休館/i.test(rest.join(":"))) closed.add(day);
-  }
-  return closed;
-}
+// ---------- 날짜 ----------
 
 /** 출발일(YYYY-MM-DD) + dayIndex의 날짜와 요일 */
 export function dayDate(startDate: string | null, dayIndex: number): { date: string; weekday: number } | null {

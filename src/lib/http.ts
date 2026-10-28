@@ -16,6 +16,14 @@ export class HttpError extends Error {
   }
 }
 
+/** withTimeoutRetry의 시간 초과 (SDK가 signal을 무시해도 이 오류로 끝난다) */
+export class TimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`timeout after ${timeoutMs}ms`);
+    this.name = "TimeoutError";
+  }
+}
+
 export interface RetryOptions {
   timeoutMs?: number;
   retries?: number;
@@ -23,17 +31,22 @@ export interface RetryOptions {
   shouldRetry?: (error: unknown) => boolean;
 }
 
+const retryableStatus = (status: number) => status === 408 || status === 429 || status >= 500;
+
+/**
+ * 다시 보내면 성공할 수 있는 오류인지. 응답 형식 오류(JSON 파싱·스키마 검증)나 4xx처럼
+ * 같은 요청을 반복해도 결과가 같은 오류는 재시도하지 않는다 (비용·지연만 늘어남).
+ */
 export function isRetryable(error: unknown): boolean {
-  if (error instanceof HttpError) {
-    return error.status === 408 || error.status === 429 || error.status >= 500;
-  }
-  // SDK 오류(Gemini·OpenAI)는 status 필드를 노출한다.
+  if (error instanceof HttpError) return retryableStatus(error.status);
+  // SDK 오류(Gemini)는 status 필드를 노출한다.
   const status = (error as { status?: unknown })?.status;
-  if (typeof status === "number") {
-    return status === 408 || status === 429 || status >= 500;
-  }
-  // AbortError/TimeoutError/TypeError(fetch failed) 등 네트워크 계열
-  return true;
+  if (typeof status === "number") return retryableStatus(status);
+  if (error instanceof TimeoutError) return true;
+  // fetch의 네트워크 실패는 TypeError("fetch failed"), 중단·시간 초과는 AbortError/TimeoutError(DOMException)
+  if (error instanceof TypeError) return true;
+  const name = (error as { name?: unknown })?.name;
+  return name === "AbortError" || name === "TimeoutError";
 }
 
 /**
@@ -60,7 +73,7 @@ export async function withTimeoutRetry<T>(
 /** signal을 무시하는 SDK가 있어도 타임아웃이 확실히 적용되도록 Promise 경쟁을 건다. */
 function raceAbort<T>(promise: Promise<T>, signal: AbortSignal, timeoutMs: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(new Error(`timeout after ${timeoutMs}ms`));
+    const onAbort = () => reject(new TimeoutError(timeoutMs));
     if (signal.aborted) return onAbort();
     signal.addEventListener("abort", onAbort, { once: true });
     promise.then(

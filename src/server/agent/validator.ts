@@ -1,4 +1,4 @@
-import { closedWeekdays, WEEKDAY_KO } from "./poiUtils";
+import { closedWeekdays, WEEKDAY_KO } from "@/lib/hours";
 import type { DayPlan, ValidationIssue } from "./types";
 
 /** PRD 4장 수용 기준: 하루 이동시간 합계 ≤ 체류시간 합계의 40% */

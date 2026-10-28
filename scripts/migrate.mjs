@@ -48,6 +48,8 @@ export async function migrate({ url, dir, log = console.log }) {
   const { config } = probe.underlyingDriver();
   const schema = probe.getConnectionInfo().schemaName ?? "dbo";
   await probe.dispose();
+  // 스키마 이름은 SQL에 식별자로 그대로 들어가므로 단순 식별자만 허용한다
+  if (!/^\w{1,128}$/.test(schema)) throw new Error("연결 문자열의 schema 이름이 올바르지 않습니다 (영문·숫자·_만)");
   const adapter = await new PrismaMssql({
     ...config,
     requestTimeout: REQUEST_TIMEOUT_MS,

@@ -141,17 +141,21 @@ export function createTripRepo(db: () => Db) {
         : null;
     },
 
+    /**
+     * 진행 상황 기록 (에이전트 저장소도 이것을 쓴다). 진행률은 0~100으로 보정하고 메시지는 컬럼 길이에 맞춘다.
+     * 여행이 이미 삭제됐으면 아무것도 하지 않는다 (updateMany — 없는 행에 예외를 던지지 않음).
+     */
     async updateProgress(
       id: string,
       update: { status: TripStatus; progress: number; step?: AgentStep; message?: string; errorMessage?: string | null },
     ): Promise<void> {
-      await db().trip.update({
+      await db().trip.updateMany({
         where: { id },
         data: {
           status: update.status,
           progress: Math.max(0, Math.min(100, Math.round(update.progress))),
           ...(update.step ? { step: update.step } : {}),
-          ...(update.message !== undefined ? { stepMessage: update.message } : {}),
+          ...(update.message !== undefined ? { stepMessage: update.message.slice(0, 500) } : {}),
           errorMessage: update.errorMessage ?? null,
         },
       });

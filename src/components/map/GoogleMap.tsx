@@ -2,7 +2,7 @@
 
 import { AdvancedMarker, APIProvider, ColorScheme, Map, Pin, Polyline, useMap } from "@vis.gl/react-google-maps";
 import { useTheme } from "next-themes";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { MapUnavailable } from "./MapUnavailable";
 import { visible, type MapViewProps } from "./types";
 
@@ -32,12 +32,15 @@ export function GoogleMap({ markers, polylines, selectedDay, className }: MapVie
   const shownMarkers = useMemo(() => visible(markers, selectedDay), [markers, selectedDay]);
   const shownLines = useMemo(() => visible(polylines, selectedDay), [polylines, selectedDay]);
   const points = useMemo(() => shownMarkers.map((m) => m.position), [shownMarkers]);
+  // 스크립트 로드 실패(네트워크·키 제한·차단 확장 프로그램) 시 빈 회색 영역 대신 안내를 보여준다 (NaverMap과 같은 처리)
+  const [failed, setFailed] = useState(false);
 
   if (!API_KEY) return <MapUnavailable className={className} reason="NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY가 설정되지 않았습니다." />;
+  if (failed) return <MapUnavailable className={className} reason="Google 지도 스크립트를 불러오지 못했습니다." />;
 
   return (
     <div className={className} data-testid="google-map">
-      <APIProvider apiKey={API_KEY} language="ko" region="KR">
+      <APIProvider apiKey={API_KEY} language="ko" region="KR" onError={() => setFailed(true)}>
         <Map
           mapId={MAP_ID}
           defaultCenter={points[0] ?? { lat: 37.5665, lng: 126.978 }}

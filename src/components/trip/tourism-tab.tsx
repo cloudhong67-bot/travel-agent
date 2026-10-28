@@ -8,7 +8,8 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { summarizeHours } from "@/lib/hours";
 import { POI_CATEGORY_LABEL } from "@/lib/labels";
 import type { CityDetail } from "@/lib/schemas";
-import { hostname, SourceLink } from "./common";
+import { hostnameOf, safeExternalUrl } from "@/lib/url";
+import { SourceLink } from "./common";
 
 const FILTERS = ["all", "sight", "museum", "food"] as const;
 type Filter = (typeof FILTERS)[number];
@@ -65,13 +66,13 @@ export function TourismTab({ city }: { city: CityDetail }) {
           <>
             <p className="text-sm leading-relaxed">{t.summary}</p>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {t.sources.map((s) => (
+              {t.sources.filter((s) => safeExternalUrl(s.url)).map((s) => (
                 <a key={s.url} href={s.url} target="_blank" rel="noopener noreferrer" className="group">
                   <Card size="sm" className="h-full transition-colors group-hover:bg-muted/50">
                     <CardHeader>
                       <CardTitle className="flex items-center gap-2 text-sm">
                         {s.official && <BadgeCheckIcon className="size-4 shrink-0 text-primary" aria-label="공식" />}
-                        <span className="truncate">{hostname(s.url)}</span>
+                        <span className="truncate">{hostnameOf(s.url) ?? s.url}</span>
                       </CardTitle>
                       <CardDescription className="truncate">{s.official ? "공식·정부 출처" : s.title}</CardDescription>
                     </CardHeader>

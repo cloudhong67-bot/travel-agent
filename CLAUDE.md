@@ -28,18 +28,19 @@
 | `src/server/adapters/search` | `WebSearchProvider` / `geminiGoogleSearch.ts` (출처는 `groundingMetadata`에서 추출) |
 | `src/server/adapters/maps` | `MapsProvider` / `google.ts`, `naver.ts`, `index.ts`(`getMapsProvider(countryCode)`: KR→naver, 그 외→google) |
 | `src/server/adapters/knowledge` | Wikipedia/Wikivoyage 요약 |
-| `src/server/agent` | 에이전트: `orchestrator.ts`(PRD 7장 7단계), `collect.ts`(병렬 수집), `assign.ts`(LLM 일자 배분), `plan.ts`+`optimizer.ts`(동선, 순수 함수), `validator.ts`, `budget.ts`(비용 가드), `runtime.ts`(운영 의존성·작업 시작), `memoryStore.ts`(테스트·평가용 저장소) |
+| `src/server/agent` | 에이전트: `orchestrator.ts`(PRD 7장 7단계 파이프라인 순서만), `job.ts`(`AgentJob`: 진행 기록·단계 span·사용량·완료/부분/실패 처리), `collect.ts`(병렬 수집), `assign.ts`(LLM 일자 배분 + 실패 시 `fallbackAssignment`), `plan.ts`+`optimizer.ts`(동선, 순수 함수), `validator.ts`, `budget.ts`(비용 가드), `runtime.ts`(운영 의존성·작업 시작), `memoryStore.ts`(테스트·평가용 저장소) |
 | `src/server/agent/prompts` | 프롬프트 문자열. 파일 첫 줄에 `version` 주석, 수정 시 버전을 올린다 |
 | `src/instrumentation.ts` | 서버 기동 시 10분 넘게 멈춘 running/queued 작업을 failed로 정리 |
 | `src/server/db` | Prisma 클라이언트 싱글턴(`client.ts`)과 Repository(`tripRepo`, `cityRepo`, `usageRepo`) |
-| `src/server/api` | 라우트 공용 응답 헬퍼 (`apiError`, `withErrorHandling`) |
-| `src/lib` | 공용 유틸 (`env.ts`, `http.ts`, `concurrency.ts`, `schemas.ts`, `openapi.ts`, `auth.ts`, `utils.ts`) |
+| `src/server/api` | 라우트 공용 응답 헬퍼 (`apiError`, `parseInput`/`ApiProblem`, `withErrorHandling`) |
+| `src/lib` | 공용 유틸 (`env.ts`, `http.ts`, `concurrency.ts`, `schemas.ts`, `openapi.ts`, `auth.ts`, `url.ts`(호스트명·안전한 링크), `hours.ts`(요일·운영시간·휴무 요일의 단일 원천), `utils.ts`) |
 | `src/proxy.ts` | 접근 토큰 보호 (Next.js 16의 middleware 대체 파일) |
 | `src/test` | MSW 핸들러, 유닛 setup, 통합 테스트 globalSetup(Testcontainers) |
 | `prisma/` | `schema.prisma`, `migrations/` |
 | `src/app/(main)` | 화면: `/`(새 여행), `/trips`(목록), `/trips/[id]`(진행·결과). `src/app/unlock`은 헤더 없는 잠금 해제 화면 |
 | `src/components` | `ui/`(shadcn 생성물), `app/`(헤더·테마·Providers), `trip/`(폼·진행·결과 탭·목록), `map/`(`TripMap` → KR이면 `NaverMap`, 그 외 `GoogleMap`, 같은 props) |
-| `src/lib/api-client.ts` | 브라우저 API 클라이언트. 응답은 `schemas.ts`로 검증 |
+| `src/lib/api-client.ts` | 브라우저 API 클라이언트. 응답은 `schemas.ts`로 검증, 30초 타임아웃 |
+| `src/app/(main)/error.tsx`, `src/app/global-error.tsx` | 화면 렌더링 오류의 대체 UI (Next 16: props는 `error: unknown`, `retry`) |
 | `Dockerfile`, `docker/start.sh` | 멀티스테이지 이미지(standalone). 시작 시 `scripts/migrate.mjs`(마이그레이션) → `node server.js` |
 | `scripts/migrate.mjs` | 경량 마이그레이션 실행기 (`prisma migrate deploy` 대체, Prisma CLI 없이 앱의 mssql 어댑터 사용). `_prisma_migrations`·체크섬을 Prisma와 같게 기록. 통합 테스트·E2E DB 준비도 이것을 쓴다 |
 | `infra/` | Bicep(구독 범위 `main.bicep` + `modules/app.bicep`), 매개변수는 `main.bicepparam`이 환경변수에서만 읽음 |
@@ -75,8 +76,10 @@
 - `DATABASE_URL`에 `connectTimeout`을 넣지 않는다 (`@prisma/adapter-mssql`이 밀리초로 해석).
 - **비밀값 하드코딩 금지.** 환경변수는 `src/lib/env.ts`(`getEnv()`)로만 읽고, 새 변수는 `envSchema`와 `.env.example`에 함께 추가한다. 로그·오류 메시지에 키가 나가지 않게 한다(`redactUrl`).
 - **커밋 전 `npm run lint`, `npm run typecheck`, `npm run test` 통과** (한 번에: `npm run check`).
-- 모든 외부 호출은 `src/lib/http.ts`의 `fetchJson` / `withTimeoutRetry`를 거친다 (15초 타임아웃 + 1회 재시도).
+- 모든 외부 호출은 `src/lib/http.ts`의 `fetchJson` / `withTimeoutRetry`를 거친다 (15초 타임아웃 + 1회 재시도). 재시도는 네트워크·시간 초과(`TimeoutError`)·408/429/5xx만 (`isRetryable`) — 4xx·응답 형식 오류는 반복해도 같으므로 재시도하지 않는다.
   예외: LLM 호출(Gemini 생성·Google 검색 그라운딩)은 `LLM_TIMEOUT_MS`(60초) + 1회 재시도.
+- 라우트는 `withErrorHandling`으로 감싸고, 입력 검증은 `parseInput(schema, value)`(실패 시 400 `ApiProblem`)로 한다. 오류 응답은 proxy를 포함해 모두 `apiError`로 만든다.
+- 장애 대응 원칙: 보조 단계는 실패해도 일정을 만든다 — 수집 실패는 경고, LLM 배분 실패는 `fallbackAssignment`(거리 기준), 이동시간 행렬 실패는 직선거리 추정, 진행 기록은 연속 3회 실패까지 무시. 단 `BudgetExceededError`는 대체하지 않고 부분 저장으로 보낸다.
 - 거리·시간 계산은 LLM이 아니라 지도 API 행렬과 결정론적 코드가 맡는다.
 - 에이전트 규칙:
   - LLM은 주어진 POI 키(P01…)만 쓸 수 있고, 코드(`enforceAssignment`)가 다시 검증해 목록 밖 항목을 버린다.
@@ -87,6 +90,7 @@
 - Naver Directions는 자동차 경로만 지원: driving 외 모드는 `{ supported: false }`를 반환하고 호출하지 않는다.
 - Google 검색 그라운딩 결과를 화면에 보여줄 때는 `searchEntryPointHtml`(검색 추천)도 함께 표시한다 (Gemini API 약관).
 - UI 규칙: 한국어, 다크 모드(next-themes), 로딩은 Skeleton·오류는 Toast(sonner), 375px에서 세로 배치. 지도 SDK의 로고·저작권 표기를 가리지 않는다.
+- 보안: `proxy.ts`가 토큰 검사와 CSRF 차단(`isCrossOriginWrite`: 다른 출처의 POST·DELETE 등은 403)을 맡는다. matcher의 `/api/:path*`는 지우지 않는다 (확장자 제외 패턴만 있으면 `/api/...x.png`가 검사 없이 통과). 외부 데이터 URL을 링크로 쓸 때는 `safeExternalUrl`(http/https만). 보안 헤더는 `next.config.ts`의 `securityHeaders`.
 - 리다이렉트 `Location`은 상대 경로로 보낸다. standalone 서버의 `request.url`은 바인딩 주소(`0.0.0.0:3000`)라 절대 URL을 만들면 프록시·포트 매핑 뒤에서 깨진다.
 - 배포 규칙: 워크플로·Bicep·코드에 비밀값을 쓰지 않는다 (예시는 `<placeholder>`). 비밀값은 GitHub Environment Secrets → Container App secret(`secretref:`)으로만 흐른다. 새 비밀값을 추가하면 `deploy.yml`·`infra/modules/app.bicep`·`export-current-app-state.sh`·RUNBOOK을 함께 고친다.
 - Bicep을 고치면 `bicep build infra/main.bicep`과 `bicep lint`로 확인한다. 워크플로는 actionlint로 확인한다.

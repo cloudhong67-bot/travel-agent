@@ -45,16 +45,17 @@ function normalize(source: EnvSource): Record<string, string | undefined> {
 
 let cached: Env | undefined;
 
+/** 검증 실패를 키 이름 목록으로 바꾼다 (값은 넣지 않는다 — 비밀값이 로그에 남지 않게) */
+function envError(title: string, error: z.ZodError): Error {
+  const issues = error.issues.map((i) => `  - ${i.path.join(".")}: ${i.message}`).join("\n");
+  return new Error(`${title}:\n${issues}`);
+}
+
 /** 전체 환경변수를 엄격하게 검증한다. 누락·형식 오류가 있으면 키 이름을 나열해 throw. */
 export function getEnv(source: EnvSource = process.env): Env {
   if (cached && source === process.env) return cached;
   const result = envSchema.safeParse(normalize(source));
-  if (!result.success) {
-    const issues = result.error.issues
-      .map((i) => `  - ${i.path.join(".")}: ${i.message}`)
-      .join("\n");
-    throw new Error(`환경변수 검증 실패:\n${issues}`);
-  }
+  if (!result.success) throw envError("환경변수 검증 실패", result.error);
   if (source === process.env) cached = result.data;
   return result.data;
 }
@@ -66,12 +67,7 @@ export function getEnv(source: EnvSource = process.env): Env {
 export function pickEnv<K extends keyof Env>(keys: readonly K[], source: EnvSource = process.env): Pick<Env, K> {
   const subset = z.object(Object.fromEntries(keys.map((k) => [k, envSchema.shape[k]])));
   const result = subset.safeParse(normalize(source));
-  if (!result.success) {
-    const issues = result.error.issues
-      .map((i) => `  - ${i.path.join(".")}: ${i.message}`)
-      .join("\n");
-    throw new Error(`환경변수 검증 실패:\n${issues}`);
-  }
+  if (!result.success) throw envError("환경변수 검증 실패", result.error);
   return result.data as unknown as Pick<Env, K>;
 }
 
@@ -83,11 +79,6 @@ export type PartialEnv = Partial<Env>;
  */
 export function getPartialEnv(source: EnvSource = process.env): PartialEnv {
   const result = envSchema.partial().safeParse(normalize(source));
-  if (!result.success) {
-    const issues = result.error.issues
-      .map((i) => `  - ${i.path.join(".")}: ${i.message}`)
-      .join("\n");
-    throw new Error(`환경변수 형식 오류:\n${issues}`);
-  }
+  if (!result.success) throw envError("환경변수 형식 오류", result.error);
   return result.data;
 }

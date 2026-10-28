@@ -15,6 +15,7 @@ import type {
 import { seoulDateKey, toDbDate } from "@/server/limits";
 import { getPrisma, type Db } from "./client";
 import { parseJsonColumn } from "./json";
+import { createTripRepo } from "./tripRepo";
 
 type CityRow = NonNullable<Awaited<ReturnType<Db["city"]["findUnique"]>>> & {
   pois: NonNullable<Awaited<ReturnType<Db["poi"]["findUnique"]>>>[];
@@ -50,6 +51,7 @@ const kindLabel = (t: NearbyTown) => (t.kind === "dayTrip" ? "[당일치기]" : 
 
 /** 에이전트용 Prisma 저장소. TripDay.stops에는 DayPlan(경로선 제외)을 JSON으로, 근교 도시 좌표 등은 Trip.meta에 둔다 */
 export function createAgentStore(db: () => Db): AgentStore {
+  const trips = createTripRepo(db);
   const getMetaRaw = async (tripId: string) => {
     const t = await db().trip.findUnique({ where: { id: tripId }, select: { meta: true } });
     return (parseJsonColumn(t?.meta ?? null) as (TripMeta & { nearbyTowns?: NearbyTown[] }) | null) ?? null;
@@ -73,18 +75,7 @@ export function createAgentStore(db: () => Db): AgentStore {
       };
     },
 
-    async updateProgress(tripId, u) {
-      await db().trip.updateMany({
-        where: { id: tripId },
-        data: {
-          status: u.status,
-          progress: Math.max(0, Math.min(100, Math.round(u.progress))),
-          step: u.step,
-          stepMessage: u.message.slice(0, 500),
-          errorMessage: u.errorMessage ?? null,
-        },
-      });
-    },
+    updateProgress: (tripId, u) => trips.updateProgress(tripId, u),
 
     async findFreshCity(name, countryCode, maxAgeDays, now) {
       const since = new Date(now.getTime() - maxAgeDays * 86_400_000);

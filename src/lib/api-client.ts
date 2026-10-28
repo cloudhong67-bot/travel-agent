@@ -24,11 +24,31 @@ export class ApiClientError extends Error {
   }
 }
 
+/** 응답이 이 시간 안에 오지 않으면 실패로 본다 (생성 작업은 202로 즉시 돌아오고 진행은 SSE로 받는다) */
+const REQUEST_TIMEOUT_MS = 30_000;
+
+/** 응답 본문을 JSON으로 읽는다. 비어 있거나 JSON이 아니면(프록시 오류 페이지 등) null */
+async function readBody(res: Response): Promise<unknown> {
+  try {
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
 async function request<S extends z.ZodType>(path: string, schema: S | null, init?: RequestInit): Promise<z.infer<S>> {
   let res: Response;
   try {
-    res = await fetch(path, { ...init, headers: { "Content-Type": "application/json", ...init?.headers }, cache: "no-store" });
-  } catch {
+    res = await fetch(path, {
+      ...init,
+      headers: { "Content-Type": "application/json", ...init?.headers },
+      cache: "no-store",
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch (error) {
+    if ((error as { name?: string })?.name === "TimeoutError") {
+      throw new ApiClientError(0, "TIMEOUT", "서버 응답이 너무 늦습니다. 잠시 후 다시 시도하세요.");
+    }
     throw new ApiClientError(0, "NETWORK_ERROR", "서버에 연결할 수 없습니다. 네트워크를 확인하세요.");
   }
 
@@ -39,12 +59,12 @@ async function request<S extends z.ZodType>(path: string, schema: S | null, init
     window.location.assign(`/unlock?next=${encodeURIComponent(next)}`);
   }
   if (!res.ok) {
-    const body = ApiErrorSchema.safeParse(await res.json().catch(() => null));
+    const body = ApiErrorSchema.safeParse(await readBody(res));
     throw new ApiClientError(res.status, body.success ? body.data.code : "HTTP_ERROR", body.success ? body.data.message : `요청 실패 (${res.status})`);
   }
   if (!schema || res.status === 204) return undefined as z.infer<S>;
 
-  const parsed = schema.safeParse(await res.json());
+  const parsed = schema.safeParse(await readBody(res));
   if (!parsed.success) {
     console.error("[api] 응답 형식 오류", path, parsed.error.issues.slice(0, 5));
     throw new ApiClientError(res.status, "INVALID_RESPONSE", "서버 응답 형식이 올바르지 않습니다.");

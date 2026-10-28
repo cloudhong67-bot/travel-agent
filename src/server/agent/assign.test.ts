@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { enforceAssignment } from "./assign";
+import { enforceAssignment, FALLBACK_STOPS_PER_DAY, fallbackAssignment } from "./assign";
 import { Budget, BudgetExceededError, estimateMatrixCalls, estimateRouteCalls } from "./budget";
 import { parseTourismAnswer } from "./prompts/tourism";
 import { toGeminiSchema } from "./prompts/common";
@@ -95,5 +95,34 @@ describe("Budget (요청당 비용 가드)", () => {
     expect(estimateRouteCalls("google", pts(5), "transit")).toBe(4);
     expect(estimateRouteCalls("google", pts(5), "driving")).toBe(1);
     expect(estimateRouteCalls("naver", pts(18), "driving")).toBe(0);
+  });
+});
+
+describe("fallbackAssignment (LLM 실패 시 대체 배분)", () => {
+  const at = (key: string, lat: number, lon: number, extra: Partial<AgentPoi> = {}): AgentPoi => ({ ...poi(key), lat, lon, ...extra });
+  // 중심(0,0) 기준 동쪽 묶음 2곳, 서쪽 묶음 2곳
+  const pois = [at("E1", 0.01, 1), at("W1", 0.01, -1), at("E2", -0.01, 1), at("W2", -0.01, -1, { category: "museum" })];
+
+  it("이웃한 장소끼리 같은 날에 묶고, 하루 최대 4곳, 범주별 기본 체류시간", () => {
+    const { days, warnings } = fallbackAssignment({ dayIndexes: [0, 1], pois });
+    expect(warnings).toEqual([]);
+    const keys = [0, 1].map((d) => days.get(d)!.stops.map((s) => s.poi.key).sort());
+    expect(keys).toContainEqual(["E1", "E2"]);
+    expect(keys).toContainEqual(["W1", "W2"]);
+    expect(days.get(0)!.stops.length + days.get(1)!.stops.length).toBe(4);
+    const museum = [...days.values()].flatMap((d) => d.stops).find((s) => s.poi.key === "W2");
+    expect(museum?.stayMins).toBe(90);
+  });
+
+  it("관광청 추천·평점 순으로 고르고, 명소가 모자라면 남는 날은 자유 일정", () => {
+    const many = Array.from({ length: 10 }, (_, i) => at(`P${i}`, i * 0.001, 0, { rating: i }));
+    many.push(at("T", 0, 0.001, { origin: "tourism", rating: undefined }));
+    const one = fallbackAssignment({ dayIndexes: [0], pois: many });
+    expect(one.days.get(0)!.stops).toHaveLength(FALLBACK_STOPS_PER_DAY);
+    expect(one.days.get(0)!.stops.map((s) => s.poi.key)).toContain("T");
+    expect(one.days.get(0)!.stops.map((s) => s.poi.key)).not.toContain("P0");
+
+    const sparse = fallbackAssignment({ dayIndexes: [0, 1, 2], pois: pois.slice(0, 2) });
+    expect(sparse.days.get(2)).toMatchObject({ title: "자유 일정", stops: [] });
   });
 });
