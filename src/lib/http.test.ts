@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { HttpError, isRetryable, redactUrl, TimeoutError, withTimeoutRetry } from "./http";
+import { HttpError, isQuotaExhausted, isRetryable, redactUrl, TimeoutError, withTimeoutRetry } from "./http";
 
 describe("withTimeoutRetry", () => {
   it("일시적 실패는 1회 재시도한다", async () => {
@@ -37,6 +37,18 @@ describe("isRetryable", () => {
     expect(isRetryable(new HttpError(404, "u", ""))).toBe(false);
     expect(isRetryable({ status: 400 })).toBe(false);
     expect(isRetryable(new Error("Invalid input"))).toBe(false);
+  });
+
+  it("하루 할당량 소진(429 RESOURCE_EXHAUSTED)은 몇 시간 뒤에야 풀리므로 재시도하지 않는다", () => {
+    const daily = Object.assign(new Error('{"error":{"code":429,"message":"Quota exceeded for metric: generate_content_free_tier_requests ... GenerateRequestsPerDayPerProjectPerModel-FreeTier"}}'), { status: 429 });
+    const billing = Object.assign(new Error("You exceeded your current quota, please check your plan and billing details."), { status: 429 });
+    expect(isQuotaExhausted(daily)).toBe(true);
+    expect(isQuotaExhausted(billing)).toBe(true);
+    expect(isRetryable(daily)).toBe(false);
+    // 잠깐의 속도 제한(분당)은 재시도
+    const burst = Object.assign(new Error("Resource has been exhausted (e.g. check quota). Requests per minute"), { status: 429 });
+    expect(isQuotaExhausted(burst)).toBe(false);
+    expect(isRetryable(burst)).toBe(true);
   });
 });
 

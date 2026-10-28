@@ -2,6 +2,7 @@
  * PRD 7장 3단계 "병렬 수집"의 개별 작업. 각 함수는 독립적으로 실패할 수 있고, 오케스트레이터가 allSettled로 묶는다.
  */
 import type { BackgroundField } from "@/lib/schemas";
+import { isQuotaExhausted } from "@/lib/http";
 import { hostnameOf } from "@/lib/url";
 import { haversineM } from "@/server/adapters/maps/naver";
 import type { LlmProvider } from "@/server/adapters/llm/types";
@@ -21,6 +22,7 @@ import {
 } from "./prompts/nearby";
 import { alternativeTourismQuery, needsAlternativeSources, parseTourismAnswer, tourismQuery } from "./prompts/tourism";
 import { BudgetExceededError } from "./budget";
+import { TRANSLATE_SYSTEM, TranslationSchema, translateUserPrompt, translationResponseSchema } from "./prompts/translate";
 
 /** LLM의 JSON 텍스트 응답을 Zod로 검증 (코드펜스가 붙어 와도 처리) */
 export function parseJsonOutput<T>(text: string, schema: { parse: (v: unknown) => T }): T {
@@ -31,37 +33,85 @@ export function parseJsonOutput<T>(text: string, schema: { parse: (v: unknown) =
 // ---------- 역사·배경 ----------
 
 const BACKGROUND_FIELDS: BackgroundField[] = ["history", "culture", "bestTime", "etiquette"];
+/** AI 요약 없이 원문을 그대로 보여줄 때의 길이 상한 */
+const ORIGINAL_TEXT_MAX = 600;
+
+const clip = (text: string) => (text.length > ORIGINAL_TEXT_MAX ? `${text.slice(0, ORIGINAL_TEXT_MAX)}…` : text);
 
 /**
- * 역사·문화·기후·매너 요약. 위키 원문을 우선 근거로 쓰고, 원문에 없는 항목(또는 원문 자체가 없을 때)은
- * Gemini의 일반 지식으로 채워 aiFields에 표시한다 — 화면에서 "AI 요약 정보"로 구분된다.
+ * 역사·문화·기후·매너 요약. 원천과 대체 경로:
+ *   1) 위키 원문(ko 우선, 없으면 en·현지어 제목·검색) → Gemini가 한국어로 요약. 원문에 없는 항목은 일반 지식으로 채워 aiFields에 표시
+ *   2) 위키 조회가 실패하거나 비어 있으면 → Gemini 일반 지식만으로 요약 (모든 항목 AI 표시)
+ *   3) Gemini가 실패하면(할당량 소진 등) → 위키 원문 소개를 그대로 담는다 (한국어 문서 우선, 외국어면 untranslatedLang 표시)
+ * 원문도 Gemini도 없을 때만 실패한다 (상위에서 경고로 바뀐다). 비용 상한 초과는 그대로 던진다.
  */
 export async function collectHistory(
   llm: LlmProvider,
   wiki: AgentDeps["wiki"],
   cityName: string,
   englishName?: string,
+  countryCode?: string,
 ): Promise<CityBackground> {
-  // 위키 조회가 실패해도(네트워크·차단) 일반 지식 요약으로 계속한다
-  const knowledge = await wiki.getCityKnowledge(cityName, englishName).catch((e) => {
+  const knowledge = await wiki.getCityKnowledge(cityName, englishName, countryCode).catch((e) => {
     console.warn(`[agent] 위키 원문 조회 실패 — 일반 지식으로 요약합니다 (${cityName})`, e);
     return { wikipedia: null, wikivoyage: null };
   });
   const docs = [knowledge.wikipedia, knowledge.wikivoyage].filter((d) => d !== null);
   const sources = docs.map((d) => ({ title: `${d.site === "wikipedia" ? "위키백과" : "위키여행"}: ${d.title}`, url: d.url }));
 
-  const res = await llm.generate({
-    systemInstruction: HISTORY_SYSTEM,
-    messages: [{ role: "user", parts: [{ kind: "text", text: historyUserPrompt(cityName, docs) }] }],
-    thinkingLevel: "low",
-    responseJsonSchema: historyResponseSchema,
-    temperature: 0.2,
-  });
-  const { aiFields: reported, ...fields } = parseJsonOutput(res.text, HistorySummarySchema);
-  const filled = BACKGROUND_FIELDS.filter((f) => fields[f]);
-  // 원문이 없으면 채운 항목은 모두 AI 지식이다. 모델이 aiFields를 빠뜨려도 출처 기반처럼 보이지 않게 코드가 정한다
-  const aiFields = docs.length === 0 ? filled : filled.filter((f) => reported.includes(f));
-  return { ...fields, sources, aiFields };
+  try {
+    const res = await llm.generate({
+      systemInstruction: HISTORY_SYSTEM,
+      messages: [{ role: "user", parts: [{ kind: "text", text: historyUserPrompt(cityName, docs) }] }],
+      thinkingLevel: "low",
+      responseJsonSchema: historyResponseSchema,
+      temperature: 0.2,
+    });
+    const { aiFields: reported, ...fields } = parseJsonOutput(res.text, HistorySummarySchema);
+    const filled = BACKGROUND_FIELDS.filter((f) => fields[f]);
+    // 원문이 없으면 채운 항목은 모두 AI 지식이다. 모델이 aiFields를 빠뜨려도 출처 기반처럼 보이지 않게 코드가 정한다
+    const aiFields = docs.length === 0 ? filled : filled.filter((f) => reported.includes(f));
+    return { ...fields, sources, aiFields, isAiSummary: aiFields.length > 0, isOriginalText: false, untranslatedLang: null };
+  } catch (error) {
+    if (error instanceof BudgetExceededError || docs.length === 0) throw error;
+    console.warn(`[agent] 배경지식 요약 실패 — 위키 원문으로 대신합니다 (${cityName})`, error);
+    // 역사는 위키백과, 소개 글은 위키여행 원문. 번역할 수 없으므로 한국어 문서가 있으면 한국어 문서만 쓴다
+    const koDocs = docs.filter((d) => d.lang === "ko");
+    const usable = koDocs.length ? koDocs : docs;
+    const pick = (site: "wikipedia" | "wikivoyage") => usable.find((d) => d.site === site);
+    const history = pick("wikipedia") ?? usable[0];
+    const intro = pick("wikivoyage");
+    const foreign = [history, intro].find((d) => d && d.lang !== "ko");
+    return {
+      history: clip(history.extract),
+      culture: intro && intro !== history ? clip(intro.extract) : null,
+      bestTime: null,
+      etiquette: null,
+      sources,
+      aiFields: [],
+      isAiSummary: false,
+      isOriginalText: true,
+      untranslatedLang: foreign?.lang ?? null,
+    };
+  }
+}
+
+/** 원문을 한국어로 옮긴다. 실패하면 null (호출 측이 원문을 그대로 쓰고 표시). 비용 상한 초과는 던진다 */
+async function translateToKorean(llm: LlmProvider, text: string): Promise<string | null> {
+  try {
+    const res = await llm.generate({
+      systemInstruction: TRANSLATE_SYSTEM,
+      messages: [{ role: "user", parts: [{ kind: "text", text: translateUserPrompt(text) }] }],
+      thinkingLevel: "low",
+      responseJsonSchema: translationResponseSchema,
+      temperature: 0.1,
+    });
+    return parseJsonOutput(res.text, TranslationSchema).text.trim() || null;
+  } catch (error) {
+    if (error instanceof BudgetExceededError) throw error;
+    console.warn("[agent] 번역 실패 — 원문을 그대로 씁니다", error);
+    return null;
+  }
 }
 
 // ---------- 관광청 ----------
@@ -88,21 +138,25 @@ const uniqueBy = <T>(items: T[], key: (t: T) => string) => {
  * 관광청 정보. 정보원 우선순위:
  *   1) 공식 관광청 (검색 그라운딩)
  *   2) 1)에 공식 사이트가 없거나 추천 명소가 부족하면 대체 출처(위키여행·지자체·여행 플랫폼) 검색을 더해 병합
- *   3) 검색이 모두 실패하면 위키여행 요약으로 최소 정보를 만든다
- * 비용 상한 초과는 대체하지 않고 그대로 던진다 (부분 저장 흐름).
+ *   3) 검색이 모두 실패하면 위키여행 요약(외국어면 한국어로 번역)으로 최소 정보를 만든다
+ * Gemini 할당량이 소진됐으면 남은 AI 호출(대체 검색·번역)은 건너뛴다. 비용 상한 초과는 그대로 던진다 (부분 저장 흐름).
  */
 export async function collectTourism(
   search: SearchProvider,
+  llm: LlmProvider,
   wiki: AgentDeps["wiki"],
   countryName: string,
   cityName: string,
   countryCode: string,
 ): Promise<TourismInfo> {
+  let quotaOut = false;
   const attempt = async (query: string, siteTitle: string) => {
+    if (quotaOut) return null;
     try {
       return readAnswer(await search.search(query, { countryCode }), siteTitle);
     } catch (error) {
       if (error instanceof BudgetExceededError) throw error;
+      quotaOut = isQuotaExhausted(error);
       console.warn(`[agent] 관광 정보 검색 실패 (${cityName})`, error);
       return null;
     }
@@ -112,7 +166,9 @@ export async function collectTourism(
   const alternative =
     !official || needsAlternativeSources(official.parsed) ? await attempt(alternativeTourismQuery(countryName, cityName), "대표 여행 정보") : null;
   const answers = [official, alternative].filter((a) => a !== null);
-  if (answers.length === 0 || answers.every((a) => !a.parsed.summary)) return wikivoyageTourism(wiki, cityName);
+  if (answers.length === 0 || answers.every((a) => !a.parsed.summary)) {
+    return wikivoyageTourism(wiki, quotaOut ? null : llm, cityName, countryCode);
+  }
 
   const isOfficial = Boolean(official?.parsed.officialSite);
   // 요약은 공식 관광청 답이 있으면 그것을, 아니면 대체 출처 답을 쓴다. 목록 항목은 합친다
@@ -128,22 +184,29 @@ export async function collectTourism(
     searchQueries: [...new Set(answers.flatMap((a) => a.res.searchQueries ?? []))],
     // 검색 결과를 보여주므로 검색마다 받은 검색 추천을 모두 함께 표시한다 (Gemini API 약관)
     searchEntryPointHtml: answers.map((a) => a.res.searchEntryPointHtml).filter(Boolean).join("\n") || null,
+    untranslatedLang: null,
   };
 }
 
-/** 검색이 모두 실패했을 때의 최소 정보: 위키여행 도시 문서 요약 (없으면 실패) */
-async function wikivoyageTourism(wiki: AgentDeps["wiki"], cityName: string): Promise<TourismInfo> {
-  const doc = await wiki.getSummary("wikivoyage", cityName);
+/**
+ * 검색이 모두 실패했을 때의 최소 정보: 위키여행 도시 문서 요약 (없으면 실패).
+ * 한국어 문서가 없어 영어 원문이면 한국어로 번역한다 (llm이 null이거나 번역 실패면 원문 + untranslatedLang)
+ */
+async function wikivoyageTourism(wiki: AgentDeps["wiki"], llm: LlmProvider | null, cityName: string, countryCode: string): Promise<TourismInfo> {
+  const doc = await wiki.getSummary("wikivoyage", cityName, undefined, countryCode);
   if (!doc) throw new Error(`관광 정보를 찾지 못했습니다 (검색·위키여행 모두 없음): ${cityName}`);
+  const original = clip(doc.extract);
+  const translated = doc.lang !== "ko" && llm ? await translateToKorean(llm, original) : null;
   return {
     sourceType: "alternative",
-    summary: doc.extract.length > 600 ? `${doc.extract.slice(0, 600)}…` : doc.extract,
+    summary: translated ?? original,
     recommended: [],
     festivals: [],
     transitPasses: [],
     sources: rankSources([{ title: `위키여행: ${doc.title}`, url: doc.url }]),
     searchQueries: [],
     searchEntryPointHtml: null,
+    untranslatedLang: doc.lang !== "ko" && !translated ? doc.lang : null,
   };
 }
 

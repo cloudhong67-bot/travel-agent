@@ -245,6 +245,16 @@ export const CityBackgroundSchema = z
       .array(BackgroundFieldSchema)
       .default([])
       .meta({ description: "출처 원문이 아니라 AI(Gemini) 일반 지식으로 채운 항목 — 화면에 'AI 요약 정보'로 표시" }),
+    isAiSummary: z.boolean().default(false).meta({ description: "AI 일반 지식으로 채운 내용이 있으면 true (화면에 'AI가 요약한 참고 정보' 안내)" }),
+    isOriginalText: z
+      .boolean()
+      .default(false)
+      .meta({ description: "AI 요약을 만들지 못해(할당량 소진 등) 위키 원문 소개를 그대로 담았으면 true" }),
+    untranslatedLang: z
+      .string()
+      .nullable()
+      .default(null)
+      .meta({ description: "번역하지 못한 원문의 언어 코드 (예: en). 한국어이거나 번역했으면 null" }),
   })
   .meta({ id: "CityBackground" });
 
@@ -261,6 +271,7 @@ export const TourismInfoSchema = z
     sources: z.array(WebSourceSchema.extend({ official: z.boolean() })),
     searchQueries: z.array(z.string()),
     searchEntryPointHtml: z.string().nullable().meta({ description: "Google 검색 추천 HTML — 그라운딩 결과와 함께 표시해야 함" }),
+    untranslatedLang: z.string().nullable().default(null).meta({ description: "요약을 번역하지 못한 경우 원문의 언어 코드 (예: en)" }),
   })
   .meta({ id: "TourismInfo" });
 

@@ -65,7 +65,10 @@ export function TourismTab({ city }: { city: CityDetail }) {
         {t ? (
           <>
             {t.sourceType === "alternative" && (
-              <Notice>공식 관광청 정보를 찾지 못해 위키여행·지자체·여행 정보 플랫폼 등 대체 출처에서 모은 정보입니다.</Notice>
+              <Notice>
+                공식 관광청 정보를 찾지 못해 위키여행·지자체·여행 정보 플랫폼 등 대체 출처에서 모은 정보입니다.
+                {t.untranslatedLang && " 요약은 번역하지 못해 원문 그대로입니다."}
+              </Notice>
             )}
             <p className="text-sm leading-relaxed">{t.summary}</p>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">

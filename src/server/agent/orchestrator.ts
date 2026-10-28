@@ -96,8 +96,8 @@ async function collectAll(ctx: CollectContext, cached: CityData | null): Promise
   await job.progress("collect", cached ? "저장된 도시 정보를 사용하고 근교 도시를 찾는 중" : "역사·관광청·명소·근교 도시를 동시에 조사하는 중");
 
   const [history, tourism, searched, nearby] = await Promise.allSettled([
-    cached ? Promise.resolve(cached.background) : tracked("역사·배경 조사", collectHistory(job.llm, deps.wiki, trip.cityName, geo.name)),
-    cached ? Promise.resolve(cached.tourismBoard) : tracked("관광청 조사", collectTourism(job.search, deps.wiki, countryName, geo.name, countryCode)),
+    cached ? Promise.resolve(cached.background) : tracked("역사·배경 조사", collectHistory(job.llm, deps.wiki, trip.cityName, geo.name, countryCode)),
+    cached ? Promise.resolve(cached.tourismBoard) : tracked("관광청 조사", collectTourism(job.search, job.llm, deps.wiki, countryName, geo.name, countryCode)),
     cached ? Promise.resolve(cached.pois) : tracked("명소 검색", searchCityPois(maps, center, geo.name)),
     isKr
       ? Promise.resolve({ towns: [] as NearbyTown[], warnings: [] as string[] })
@@ -120,6 +120,7 @@ async function collectAll(ctx: CollectContext, cached: CityData | null): Promise
   };
 
   const background = value(history, "역사·배경 조사") as CityBackground | null;
+  if (background?.isOriginalText) job.meta.warnings.push("AI 요약을 만들지 못해(할당량 소진 등) 배경지식은 위키 원문 소개를 그대로 담았습니다.");
   const tourismInfo = value(tourism, "관광청 조사") as TourismInfo | null;
   const searchedPois = (value(searched, "명소 검색") as AgentPoi[] | null) ?? [];
   const nearbyResult = value(nearby, "근교 도시 조사");

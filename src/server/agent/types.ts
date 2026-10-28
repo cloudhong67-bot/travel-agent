@@ -34,6 +34,12 @@ export interface CityBackground {
   sources: WebSource[];
   /** 출처 원문 대신 AI(Gemini) 일반 지식으로 채운 항목 */
   aiFields: BackgroundField[];
+  /** aiFields가 하나라도 있으면 true */
+  isAiSummary: boolean;
+  /** AI 요약을 만들지 못해 위키 원문 소개를 그대로 담았는지 */
+  isOriginalText: boolean;
+  /** 번역하지 못한 원문의 언어 (한국어이거나 번역했으면 null) */
+  untranslatedLang: string | null;
 }
 
 export interface TourismInfo {
@@ -48,6 +54,8 @@ export interface TourismInfo {
   searchQueries: string[];
   /** Google 검색 추천 HTML (그라운딩 결과 표시 시 함께 노출해야 함) */
   searchEntryPointHtml: string | null;
+  /** 요약을 번역하지 못한 경우 원문의 언어 */
+  untranslatedLang: string | null;
 }
 
 export interface CityData {

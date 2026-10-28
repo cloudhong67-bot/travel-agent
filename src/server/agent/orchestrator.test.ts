@@ -403,3 +403,60 @@ describe("추천 체류 일수·일정 조정", () => {
     expect(await store.getDays(id)).toEqual(before);
   });
 });
+
+describe("Gemini 할당량 소진 (세비야 실패 재현)", () => {
+  it("요약·검색·배분이 모두 429여도 위키 원문·대체 배분으로 일정을 완성하고, 소진된 할당량은 재시도하지 않는다", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { store, deps, counters } = setup({ geminiQuotaExhausted: true });
+    const id = store.createTrip(porto);
+    await runTripJob(id, deps);
+
+    const t = store.trips.get(id)!;
+    expect(t.status).toBe("done");
+    const city = (await store.getCity(t.cityId!))!;
+    // 배경지식: "수집하지 못했습니다" 대신 위키 원문 소개
+    expect(city.background).toMatchObject({ isOriginalText: true, isAiSummary: false, aiFields: [], untranslatedLang: null });
+    expect(city.background!.history).toBe("도시 개요 원문.");
+    expect(t.meta!.warnings.some((w) => w.includes("위키 원문"))).toBe(true);
+    // 관광 정보: 검색 실패 → 대체 출처 검색은 건너뛰고 위키여행 요약 (번역 호출도 하지 않음)
+    expect(city.tourismBoard).toMatchObject({ sourceType: "alternative", untranslatedLang: null });
+    expect(counters.gemini.translate).toBe(0);
+    // 일정: LLM 배분 대신 거리 기준 대체 배분
+    expect(t.meta!.warnings).toContain(ASSIGN_FALLBACK_WARNING);
+    expect((await store.getDays(id)).every((d) => d.stops.length > 0)).toBe(true);
+    // 하루 할당량 429는 재시도하지 않고, 대체 출처 검색·번역도 건너뛴다:
+    // 요약 1 + 공식 검색 1 + 근교 후보 1 + 배분 1 + 검증 재배분 시도 최대 1 (재시도했다면 각 2회씩 → 8 이상)
+    expect(counters.gemini.total).toBeLessThanOrEqual(5);
+  });
+
+  it("관광 정보 대체 시 영어 위키여행 원문은 한국어로 번역한다", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { store, deps, counters } = setup({ tourism: "fail", wikivoyageEnglishOnly: true });
+    const id = store.createTrip(porto);
+    await runTripJob(id, deps);
+    const t = (await store.getCity(store.trips.get(id)!.cityId!))!.tourismBoard!;
+    expect(counters.gemini.translate).toBe(1);
+    expect(t).toMatchObject({ sourceType: "alternative", untranslatedLang: null });
+    expect(t.summary).toContain("포르투(Porto)는");
+    expect(t.sources[0].url).toContain("en.wikivoyage.org");
+  });
+});
+
+describe("배경지식 원문 대체 (Gemini 실패 시)", () => {
+  /** 위키백과는 ko, 위키여행은 en만 있는 도시 (세비야와 같은 상황) — 요약 요청만 실패시킨다 */
+  it("한국어 원문이 있으면 한국어만 쓰고, 영어 원문은 번역 없이 섞지 않는다", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { store, deps } = setup({ tourism: "fail", wikivoyageEnglishOnly: true });
+    const failHistory: LlmProvider = {
+      async generate(req) {
+        if (req.systemInstruction?.includes("여행 안내서 편집자")) throw Object.assign(new Error("quota"), { status: 429, message: "check your plan and billing details" });
+        return deps.llm.generate(req);
+      },
+    };
+    const id = store.createTrip(porto);
+    await runTripJob(id, { ...deps, llm: failHistory });
+    const bg = (await store.getCity(store.trips.get(id)!.cityId!))!.background!;
+    expect(bg).toMatchObject({ isOriginalText: true, untranslatedLang: null, culture: null, history: "도시 개요 원문." });
+    expect(bg.sources.map((s) => s.title)).toContainEqual(expect.stringContaining("위키여행")); // 출처 목록에는 남긴다
+  });
+});

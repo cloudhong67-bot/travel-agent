@@ -17,10 +17,24 @@ export interface ScenarioOptions {
    * fail 검색 실패 → 위키여행 요약으로 대체
    */
   tourism?: "official" | "thin" | "fail";
+  /** Gemini 무료 등급 하루 할당량 소진: 모든 Gemini 요청이 429 RESOURCE_EXHAUSTED (세비야 실패 재현) */
+  geminiQuotaExhausted?: boolean;
+  /** 위키여행 문서가 영어(en)에만 있다 (관광 정보 대체 시 한국어 번역 확인용) */
+  wikivoyageEnglishOnly?: boolean;
 }
 
+const QUOTA_EXHAUSTED = {
+  error: {
+    code: 429,
+    message:
+      "You exceeded your current quota, please check your plan and billing details.\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20",
+    status: "RESOURCE_EXHAUSTED",
+    details: [{ "@type": "type.googleapis.com/google.rpc.QuotaFailure", violations: [{ quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier" }] }],
+  },
+};
+
 export interface ScenarioCounters {
-  gemini: { history: number; search: number; candidates: number; selection: number; assignment: number; assignmentJson: number };
+  gemini: { history: number; search: number; candidates: number; selection: number; assignment: number; assignmentJson: number; translate: number; total: number };
   /** 마지막 일자 배분 요청의 프롬프트 (사용자 요청 반영 확인용) */
   lastAssignmentPrompt: string;
   wikivoyage: number;
@@ -35,7 +49,7 @@ export interface ScenarioCounters {
 }
 
 const newCounters = (): ScenarioCounters => ({
-  gemini: { history: 0, search: 0, candidates: 0, selection: 0, assignment: 0, assignmentJson: 0 },
+  gemini: { history: 0, search: 0, candidates: 0, selection: 0, assignment: 0, assignmentJson: 0, translate: 0, total: 0 },
   places: 0,
   geocode: 0,
   matrix: 0,
@@ -160,6 +174,8 @@ export function agentHandlers(opts: ScenarioOptions = {}) {
       const body = (await request.json()) as Record<string, unknown>;
       const raw = JSON.stringify(body);
       const prompt = promptText(body as never);
+      counters.gemini.total++;
+      if (opts.geminiQuotaExhausted) return HttpResponse.json(QUOTA_EXHAUSTED, { status: 429 });
 
       if (raw.includes('"googleSearch"')) {
         counters.gemini.search++;
@@ -229,6 +245,10 @@ export function agentHandlers(opts: ScenarioOptions = {}) {
         counters.gemini.selection++;
         const names = [...prompt.matchAll(/^- (.+?): 편도/gm)].map((m) => m[1]);
         return geminiText(JSON.stringify({ selected: [...names.map((n) => ({ name: n, reason: `${n}은 역사 도시다.` })), { name: "가짜도시", reason: "x" }] }));
+      }
+      if (prompt.includes("한국어로 옮겨 text에 담아라")) {
+        counters.gemini.translate++;
+        return geminiText(JSON.stringify({ text: "포르투(Porto)는 포르투갈 북부의 항구 도시로, 리베이라 지구와 와인 저장고가 볼거리다." }));
       }
       if (raw.includes('"days"')) {
         counters.gemini.assignmentJson++;
@@ -333,11 +353,13 @@ export function agentHandlers(opts: ScenarioOptions = {}) {
     // Wikipedia (기본 핸들러를 덮어써 호출 수를 센다)
     http.get("https://:lang.wikivoyage.org/api/rest_v1/page/summary/:title", ({ params }) => {
       counters.wikivoyage++;
-      if (opts.noWiki || opts.tourism !== "fail") return new HttpResponse(null, { status: 404 });
+      const serves = opts.tourism === "fail" || opts.geminiQuotaExhausted;
+      if (opts.noWiki || !serves || (opts.wikivoyageEnglishOnly && params.lang !== "en")) return new HttpResponse(null, { status: 404 });
+      const english = params.lang === "en";
       return HttpResponse.json({
         type: "standard",
         title: decodeURIComponent(String(params.title)),
-        extract: "포르투는 포르투갈 북부의 항구 도시로, 리베이라 지구와 와인 저장고가 볼거리다.",
+        extract: english ? "Porto is a port city in northern Portugal, known for the Ribeira district and port wine cellars." : "포르투는 포르투갈 북부의 항구 도시로, 리베이라 지구와 와인 저장고가 볼거리다.",
         content_urls: { desktop: { page: `https://${params.lang}.wikivoyage.org/wiki/${params.title}` } },
       });
     }),

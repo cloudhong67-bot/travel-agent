@@ -16,6 +16,17 @@ export class HttpError extends Error {
   }
 }
 
+/**
+ * 일·월 단위 할당량을 다 쓴 429인지 (예: Gemini 무료 등급 "requests per day"). 잠깐의 속도 제한과 달리
+ * 몇 시간 뒤에야 풀리므로 재시도하지 않고, 같은 작업의 다른 AI 호출도 건너뛰어 대체 경로로 간다.
+ */
+export function isQuotaExhausted(error: unknown): boolean {
+  const status = error instanceof HttpError ? error.status : (error as { status?: unknown })?.status;
+  if (status !== 429) return false;
+  const text = error instanceof HttpError ? error.body : String((error as { message?: unknown })?.message ?? "");
+  return /PerDay|per day|PerMonth|per month|check your plan and billing/i.test(text);
+}
+
 /** withTimeoutRetry의 시간 초과 (SDK가 signal을 무시해도 이 오류로 끝난다) */
 export class TimeoutError extends Error {
   constructor(readonly timeoutMs: number) {
@@ -38,6 +49,7 @@ const retryableStatus = (status: number) => status === 408 || status === 429 || 
  * 같은 요청을 반복해도 결과가 같은 오류는 재시도하지 않는다 (비용·지연만 늘어남).
  */
 export function isRetryable(error: unknown): boolean {
+  if (isQuotaExhausted(error)) return false;
   if (error instanceof HttpError) return retryableStatus(error.status);
   // SDK 오류(Gemini)는 status 필드를 노출한다.
   const status = (error as { status?: unknown })?.status;
